@@ -17,23 +17,28 @@ Living checklist of work between **v0.1** (shipped) and the ambitious full-visio
 
 ---
 
-## Sprint 6 — Tools (next; high value)
+## Sprint 6 — Tools (read-only MVP shipped)
 
-Goal: Mochi can actually do work, not just chat. Test on Luna-SRSA (Qwen3 base) first; swap to Qwen3-Instruct if tool-calling degrades.
+Goal: Mochi can actually do work, not just chat. Verified on Luna-SRSA (Qwen3 base) — tool-calling survives the RP finetune.
 
-- [ ] Add `tools` + `tool_choice` to `LlamaConfig` and request body (`src/agent/llama_client.rs`)
-- [ ] Parse `delta.tool_calls[]` from SSE response → emit `BridgeEvent::SessionUpdate::ToolCall`
-- [ ] Tool loop in `llama_lifecycle.rs`: tool_call → execute → feed result back as `tool` role → continue stream
-- [ ] **Tool 1: `read_file`** — read project files, return as content. No permission needed (read-only).
-- [ ] **Tool 2: `list_dir`** — directory tree, respects `.gitignore`.
-- [ ] **Tool 3: `web_fetch`** — HTTP GET a URL, return HTML→Markdown via existing `pulldown_cmark`.
-- [ ] **Tool 4: `web_search`** — Tavily or Brave API; needs `MOCHI_SEARCH_API_KEY`.
-- [ ] **Tool 5: `write_file` / `edit_file`** — with inline diff preview + per-call confirmation (reuse CCR's permission UI).
-- [ ] **Tool 6: `bash`** — sandboxed shell exec; require explicit allow-list of binaries OR confirmation; deny `rm -rf /`, `sudo`, etc. by default.
+- [x] Add `tools` + `tool_choice` to `LlamaConfig` and request body (`src/agent/llama_client.rs`)
+- [x] Parse `delta.tool_calls[]` from SSE response → emit `BridgeEvent::SessionUpdate::ToolCall`
+- [x] Tool loop in `llama_lifecycle.rs`: tool_call → execute → feed result back as `tool` role → continue stream (max 6 iterations)
+- [x] `sdk_kind_for` mapper so CCR's `ui/theme.rs::tool_name_label` renders correct icon (Read/Write/Bash/…) instead of generic Tool fallback
+- [x] **Tool 1: `read_file`** — 200KB cap, tilde expand, returns header + body
+- [x] **Tool 2: `find_file`** — substring search via `ignore::WalkBuilder`, respects `.gitignore`, max depth 8, top 20 matches
 
-Decision points to flag during build:
+### Sprint 6b — Write tools + permission flow (next)
+
+- [ ] **Tool: `web_fetch`** — `reqwest` GET + `pulldown_cmark` HTML→Markdown. Read-only, no permission needed.
+- [ ] **Tool: `bash`** — `tokio::process::Command`. Requires `PermissionRequest` event before exec.
+- [ ] **Tool: `write_file` / `edit_file`** — inline diff preview, requires `PermissionRequest`.
+- [ ] Wire `emit_permission_request` from `llama_lifecycle` reusing CCR's `handle_permission_request_event` channel. Wait for `BridgeCommand::PermissionResponse` before execution.
+- [ ] **Tool: `web_search`** — Tavily / Brave / Serper API, `MOCHI_SEARCH_API_KEY` env var.
+
+Decision points still open:
 - Permission UX: per-call confirm (Claude Code style) vs. trust-this-session vs. allowlist file.
-- Sandbox depth: chroot? Docker? `nsjail`? For v0.1 of tools probably just CWD-rooted with denylist.
+- Sandbox depth: chroot? Docker? `nsjail`? For v0.1 likely CWD-rooted with denylist.
 
 ---
 
