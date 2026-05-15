@@ -1,4 +1,4 @@
-use crate::agent::llama_client::{ChatEvent, LlamaConfig, Message, Role, stream_chat};
+use crate::agent::llama_client::{ChatEvent, LlamaConfig, Message, stream_chat};
 use crate::memory::FactKind;
 use futures::StreamExt as _;
 
@@ -46,10 +46,7 @@ pub async fn capture_facts(base_config: &LlamaConfig, user_text: &str) -> Vec<Ca
         temperature: Some(EXTRACTION_TEMPERATURE),
         max_tokens: Some(EXTRACTION_MAX_TOKENS),
     };
-    let messages = vec![
-        Message { role: Role::System, content: EXTRACTION_SYSTEM.to_owned() },
-        Message { role: Role::User, content: user_text.to_owned() },
-    ];
+    let messages = vec![Message::system(EXTRACTION_SYSTEM), Message::user(user_text)];
     let mut stream = match stream_chat(&config, &messages).await {
         Ok(s) => Box::pin(s),
         Err(_) => return Vec::new(),
@@ -58,6 +55,7 @@ pub async fn capture_facts(base_config: &LlamaConfig, user_text: &str) -> Vec<Ca
     while let Some(item) = stream.next().await {
         match item {
             Ok(ChatEvent::Delta(text)) => full.push_str(&text),
+            Ok(ChatEvent::ToolCall(_)) => {}
             Ok(ChatEvent::Done) => break,
             Err(_) => break,
         }

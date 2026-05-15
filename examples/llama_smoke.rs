@@ -17,8 +17,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let messages = vec![
-        Message { role: Role::System, content: "You are Mochi, a cute terminal pet.".to_owned() },
-        Message { role: Role::User, content: prompt },
+        Message::system("You are Mochi, a cute terminal pet."),
+        Message::user(prompt),
     ];
 
     eprintln!("→ POST {}/v1/chat/completions", config.url);

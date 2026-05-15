@@ -2,7 +2,11 @@
 //! HTTP+SSE client and synthesizes the BridgeEvents the existing TUI expects.
 
 use crate::agent::client::AgentConnection;
-use crate::agent::llama_client::{ChatEvent, LlamaConfig, Message, Role, stream_chat};
+use crate::agent::llama_client::{
+    ChatEvent, LlamaConfig, LlmToolCall, Message, RoleToolCall, RoleToolCallFunction,
+    stream_chat_with_tools,
+};
+use crate::tools;
 use crate::agent::types;
 use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
 use crate::memory::{self, MemoryStore, render_memory_section};
@@ -79,10 +83,11 @@ pub(super) async fn run_llama_task(
     let mut active_skill: Option<String> = None;
     let mut skills_cache: BTreeMap<String, Skill> = load_skills_cache();
 
-    let mut history: Vec<Message> = vec![Message {
-        role: Role::System,
-        content: build_system_prompt(&base_system, active_skill.as_deref(), &skills_cache),
-    }];
+    let mut history: Vec<Message> = vec![Message::system(build_system_prompt(
+        &base_system,
+        active_skill.as_deref(),
+        &skills_cache,
+    ))];
 
     loop {
         tokio::select! {
@@ -201,6 +206,8 @@ fn spawn_background_capture(
     });
 }
 
+const MAX_TOOL_ITERATIONS: usize = 6;
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_prompt(
     event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
@@ -211,60 +218,238 @@ async fn handle_prompt(
     session_id: String,
     chunks: Vec<types::PromptChunk>,
 ) {
-    let user_text = chunks
-        .iter()
-        .filter(|c| c.kind == "text")
-        .filter_map(|c| c.value.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let user_text = extract_user_text(&chunks);
     if user_text.is_empty() {
         emit_turn_complete(event_tx, cmd_tx, connected_once, session_id);
         return;
     }
 
-    history.push(Message { role: Role::User, content: user_text });
+    history.push(Message::user(user_text));
 
-    let mut stream = match stream_chat(config, history).await {
-        Ok(s) => Box::pin(s),
-        Err(err) => {
-            history.pop();
+    let tool_specs = tools::available_tools();
+
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "llama_prompt_iteration",
+            iteration,
+            tools_advertised = tool_specs.len(),
+            history_len = history.len(),
+            "llama prompt iteration"
+        );
+        let stream_result = stream_chat_with_tools(config, history, &tool_specs).await;
+        let mut stream = match stream_result {
+            Ok(s) => Box::pin(s),
+            Err(err) => {
+                if iteration == 0 {
+                    history.pop();
+                }
+                emit_turn_error(event_tx, cmd_tx, connected_once, session_id, err.to_string());
+                return;
+            }
+        };
+
+        let mut assistant_text = String::new();
+        let mut tool_calls: Vec<LlmToolCall> = Vec::new();
+        let mut error: Option<anyhow::Error> = None;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(ChatEvent::Delta(text)) if text.is_empty() => {}
+                Ok(ChatEvent::Delta(text)) => {
+                    assistant_text.push_str(&text);
+                    emit_assistant_chunk(event_tx, cmd_tx, connected_once, &session_id, text);
+                }
+                Ok(ChatEvent::ToolCall(tc)) => tool_calls.push(tc),
+                Ok(ChatEvent::Done) => break,
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            }
+        }
+        drop(stream);
+
+        if let Some(err) = error {
+            history.push(Message::assistant(assistant_text));
             emit_turn_error(event_tx, cmd_tx, connected_once, session_id, err.to_string());
             return;
         }
+
+        history.push(assistant_message(assistant_text, &tool_calls));
+
+        if tool_calls.is_empty() {
+            emit_turn_complete(event_tx, cmd_tx, connected_once, session_id);
+            return;
+        }
+
+        for tc in &tool_calls {
+            emit_tool_call_started(event_tx, cmd_tx, connected_once, &session_id, tc);
+            let result = tools::execute(&tc.name, &tc.arguments).await;
+            let (status, output) = match result {
+                Ok(o) => ("completed", o),
+                Err(e) => ("failed", format!("tool error: {e}")),
+            };
+            emit_tool_call_completed(
+                event_tx,
+                cmd_tx,
+                connected_once,
+                &session_id,
+                tc,
+                status,
+                &output,
+            );
+            history.push(Message::tool_response(tc.id.clone(), output));
+        }
+    }
+
+    emit_turn_error(
+        event_tx,
+        cmd_tx,
+        connected_once,
+        session_id,
+        format!("max tool iterations ({MAX_TOOL_ITERATIONS}) reached"),
+    );
+}
+
+fn assistant_message(text: String, tool_calls: &[LlmToolCall]) -> Message {
+    let mut msg = Message::assistant(text);
+    if !tool_calls.is_empty() {
+        msg.tool_calls = Some(
+            tool_calls
+                .iter()
+                .map(|tc| RoleToolCall {
+                    id: tc.id.clone(),
+                    kind: "function".to_owned(),
+                    function: RoleToolCallFunction {
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    },
+                })
+                .collect(),
+        );
+    }
+    msg
+}
+
+fn emit_tool_call_started(
+    event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    connected_once: &mut bool,
+    session_id: &str,
+    tc: &LlmToolCall,
+) {
+    let raw_input = serde_json::from_str::<serde_json::Value>(&tc.arguments).ok();
+    let sdk_kind = sdk_kind_for(&tc.name);
+    let tool_call = types::ToolCall {
+        tool_call_id: tc.id.clone(),
+        title: format!("{} {}", sdk_kind, summarize_args(&tc.arguments)),
+        kind: sdk_kind.to_owned(),
+        status: "in_progress".to_owned(),
+        content: Vec::new(),
+        raw_input,
+        raw_output: None,
+        output_metadata: None,
+        task_metadata: None,
+        locations: Vec::new(),
+        meta: None,
     };
+    handle_bridge_event(
+        event_tx,
+        cmd_tx,
+        connected_once,
+        false,
+        EventEnvelope {
+            request_id: None,
+            event: BridgeEvent::SessionUpdate {
+                session_id: session_id.to_owned(),
+                update: types::SessionUpdate::ToolCall { tool_call },
+            },
+        },
+    );
+}
 
-    let mut assistant = String::new();
-    let mut error: Option<anyhow::Error> = None;
+fn emit_tool_call_completed(
+    event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    connected_once: &mut bool,
+    session_id: &str,
+    tc: &LlmToolCall,
+    status: &str,
+    output: &str,
+) {
+    let content = vec![types::ToolCallContent::Content {
+        content: types::ContentBlock::Text { text: output.to_owned() },
+    }];
+    let update = types::ToolCallUpdate {
+        tool_call_id: tc.id.clone(),
+        fields: types::ToolCallUpdateFields {
+            status: Some(status.to_owned()),
+            content: Some(content),
+            raw_output: Some(output.to_owned()),
+            ..Default::default()
+        },
+    };
+    handle_bridge_event(
+        event_tx,
+        cmd_tx,
+        connected_once,
+        false,
+        EventEnvelope {
+            request_id: None,
+            event: BridgeEvent::SessionUpdate {
+                session_id: session_id.to_owned(),
+                update: types::SessionUpdate::ToolCallUpdate { tool_call_update: update },
+            },
+        },
+    );
+}
 
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(ChatEvent::Delta(text)) if text.is_empty() => {}
-            Ok(ChatEvent::Delta(text)) => {
-                assistant.push_str(&text);
-                emit_assistant_chunk(event_tx, cmd_tx, connected_once, &session_id, text);
-            }
-            Ok(ChatEvent::Done) => break,
-            Err(err) => {
-                error = Some(err);
-                break;
-            }
-        }
+fn summarize_args(args: &str) -> String {
+    let trimmed = args.trim();
+    if trimmed.len() <= 80 {
+        trimmed.to_owned()
+    } else {
+        format!("{}…", &trimmed[..77])
+    }
+}
+
+/// Map snake_case OpenAI tool names to PascalCase SDK names so CCR's
+/// `tool_name_label` (src/ui/theme.rs) dispatches to the right icon and label
+/// instead of falling through to the generic "Tool" placeholder.
+fn sdk_kind_for(name: &str) -> &'static str {
+    match name {
+        "read_file" => "Read",
+        "write_file" => "Write",
+        "edit_file" => "Edit",
+        "bash" | "run_command" => "Bash",
+        "grep" | "search" => "Grep",
+        "glob" | "find_file" => "Glob",
+        "list_dir" | "ls" => "LS",
+        "web_fetch" | "fetch_url" => "WebFetch",
+        "web_search" => "WebSearch",
+        _ => "Tool",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sdk_kind_for;
+
+    #[test]
+    fn maps_known_tool_names_to_pascal_case() {
+        assert_eq!(sdk_kind_for("read_file"), "Read");
+        assert_eq!(sdk_kind_for("write_file"), "Write");
+        assert_eq!(sdk_kind_for("bash"), "Bash");
+        assert_eq!(sdk_kind_for("run_command"), "Bash");
+        assert_eq!(sdk_kind_for("web_fetch"), "WebFetch");
     }
 
-    drop(stream);
-
-    if let Some(err) = error {
-        if assistant.is_empty() {
-            history.pop();
-        } else {
-            history.push(Message { role: Role::Assistant, content: assistant });
-        }
-        emit_turn_error(event_tx, cmd_tx, connected_once, session_id, err.to_string());
-        return;
+    #[test]
+    fn falls_back_to_tool_for_unknown_names() {
+        assert_eq!(sdk_kind_for("something_weird"), "Tool");
+        assert_eq!(sdk_kind_for(""), "Tool");
     }
-
-    history.push(Message { role: Role::Assistant, content: assistant });
-    emit_turn_complete(event_tx, cmd_tx, connected_once, session_id);
 }
 
 fn emit_assistant_chunk(

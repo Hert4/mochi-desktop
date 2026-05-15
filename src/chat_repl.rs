@@ -1,4 +1,4 @@
-use crate::agent::llama_client::{ChatEvent, LlamaConfig, Message, Role, stream_chat};
+use crate::agent::llama_client::{ChatEvent, LlamaConfig, Message, stream_chat};
 use crate::memory::{self, FactKind, MemoryStore, render_memory_section};
 use crate::pet::{PetMood, sprite};
 use crate::skills::{self, Skill};
@@ -286,7 +286,7 @@ pub async fn run(url: String, system: String, temperature: f32) -> anyhow::Resul
 
     let mut active_skill: Option<String> = None;
     let initial_system = compose_system(&system, None, memory_store.as_ref());
-    let mut history: Vec<Message> = vec![Message { role: Role::System, content: initial_system }];
+    let mut history: Vec<Message> = vec![Message::system(initial_system)];
     let stdin = std::io::stdin();
     let mut stdin_lock = stdin.lock();
     let mut buf = String::new();
@@ -319,7 +319,7 @@ pub async fn run(url: String, system: String, temperature: f32) -> anyhow::Resul
             }
         }
 
-        history.push(Message { role: Role::User, content: user_text.to_owned() });
+        history.push(Message::user(user_text));
 
         print_pet(PetMood::Thinking, "");
 
@@ -335,6 +335,9 @@ pub async fn run(url: String, system: String, temperature: f32) -> anyhow::Resul
                         print!("{text}");
                         std::io::stdout().flush().ok();
                         assistant.push_str(&text);
+                    }
+                    Ok(ChatEvent::ToolCall(_)) => {
+                        // REPL mode does not advertise tools — ignore stray calls.
                     }
                     Ok(ChatEvent::Done) => break,
                     Err(err) => {
@@ -353,7 +356,7 @@ pub async fn run(url: String, system: String, temperature: f32) -> anyhow::Resul
             continue;
         }
 
-        history.push(Message { role: Role::Assistant, content: assistant });
+        history.push(Message::assistant(assistant));
         print_pet(PetMood::Happy, "");
         println!();
     }

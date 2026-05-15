@@ -11,6 +11,7 @@ pub mod memory_capture;
 pub mod perf;
 pub mod pet;
 pub mod skills;
+pub mod tools;
 pub mod ui;
 
 use clap::{Parser, Subcommand, ValueEnum};
