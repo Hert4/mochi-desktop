@@ -1,0 +1,24 @@
+Mochi
+Copyright 2026 Mochi contributors
+
+This product includes software developed at
+claude-code-rust by Simon Peter Rothgang (https://github.com/srothgan/claude-code-rust)
+Copyright 2025 Simon Peter Rothgang
+Licensed under the Apache License, Version 2.0.
+
+The terminal UI runtime, ratatui rendering pipeline, slash command system,
+input area, and chat view layout are derived from claude-code-rust.
+Changes from upstream include:
+- Removed the Node.js Agent SDK bridge dependency for non-Anthropic providers.
+- Added llama.cpp provider (`src/agent/llama_client.rs`, `src/app/connect/llama_lifecycle.rs`).
+- Added Skills loader (`src/skills.rs`), Memory layer (`src/memory.rs`, `src/memory_capture.rs`).
+- Added pet character renderer (`src/pet.rs`).
+- Rebranded user-visible strings (Claude → Mochi) and welcome banner.
+- Disabled startup update checks that pointed to the upstream npm package.
+
+The original Apache-2.0 license and copyright notice are preserved in LICENSE.
+
+Third-party acknowledgments:
+- Anthropic Agent Skills convention (Markdown SKILL.md frontmatter)
+- BOOKMARKS paper (Koishi's Day 2026, arxiv 2605.14169) — 4-kind memory schema
+- llama.cpp / ggml — inference runtime
