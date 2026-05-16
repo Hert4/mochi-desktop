@@ -13,7 +13,7 @@ use crate::memory::{self, MemoryStore, render_memory_section};
 use crate::memory_capture;
 use crate::skills::{self, Skill};
 use futures::StreamExt as _;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 
@@ -88,6 +88,7 @@ pub(super) async fn run_llama_task(
         active_skill.as_deref(),
         &skills_cache,
     ))];
+    let mut allow_set: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
@@ -106,7 +107,9 @@ pub(super) async fn run_llama_task(
                         handle_prompt(
                             &params.event_tx,
                             &cmd_tx,
+                            &mut cmd_rx,
                             &mut connected_once,
+                            &mut allow_set,
                             &mut history,
                             &config,
                             prompt_session,
@@ -208,11 +211,20 @@ fn spawn_background_capture(
 
 const MAX_TOOL_ITERATIONS: usize = 6;
 
+#[derive(Debug, Clone, Copy)]
+enum PermissionDecision {
+    AllowOnce,
+    AllowSession,
+    Reject,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_prompt(
     event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
     cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<CommandEnvelope>,
     connected_once: &mut bool,
+    allow_set: &mut HashSet<String>,
     history: &mut Vec<Message>,
     config: &LlamaConfig,
     session_id: String,
@@ -284,7 +296,45 @@ async fn handle_prompt(
         }
 
         for tc in &tool_calls {
+            let allowed = if tools::needs_permission(&tc.name) && !allow_set.contains(&tc.name) {
+                match request_permission(
+                    event_tx,
+                    cmd_tx,
+                    cmd_rx,
+                    connected_once,
+                    &session_id,
+                    tc,
+                )
+                .await
+                {
+                    PermissionDecision::AllowOnce => true,
+                    PermissionDecision::AllowSession => {
+                        allow_set.insert(tc.name.clone());
+                        true
+                    }
+                    PermissionDecision::Reject => false,
+                }
+            } else {
+                true
+            };
+
             emit_tool_call_started(event_tx, cmd_tx, connected_once, &session_id, tc);
+
+            if !allowed {
+                let denial = "User denied permission for this tool call.";
+                emit_tool_call_completed(
+                    event_tx,
+                    cmd_tx,
+                    connected_once,
+                    &session_id,
+                    tc,
+                    "failed",
+                    denial,
+                );
+                history.push(Message::tool_response(tc.id.clone(), denial.to_owned()));
+                continue;
+            }
+
             let result = tools::execute(&tc.name, &tc.arguments).await;
             let (status, output) = match result {
                 Ok(o) => ("completed", o),
@@ -340,11 +390,10 @@ fn emit_tool_call_started(
     tc: &LlmToolCall,
 ) {
     let raw_input = serde_json::from_str::<serde_json::Value>(&tc.arguments).ok();
-    let sdk_kind = sdk_kind_for(&tc.name);
     let tool_call = types::ToolCall {
         tool_call_id: tc.id.clone(),
-        title: format!("{} {}", sdk_kind, summarize_args(&tc.arguments)),
-        kind: sdk_kind.to_owned(),
+        title: format!("{} {}", tc.name, summarize_args(&tc.arguments)),
+        kind: tc.name.clone(),
         status: "in_progress".to_owned(),
         content: Vec::new(),
         raw_input,
@@ -414,43 +463,87 @@ fn summarize_args(args: &str) -> String {
     }
 }
 
-/// Map snake_case OpenAI tool names to PascalCase SDK names so CCR's
-/// `tool_name_label` (src/ui/theme.rs) dispatches to the right icon and label
-/// instead of falling through to the generic "Tool" placeholder.
-fn sdk_kind_for(name: &str) -> &'static str {
-    match name {
-        "read_file" => "Read",
-        "write_file" => "Write",
-        "edit_file" => "Edit",
-        "bash" | "run_command" => "Bash",
-        "grep" | "search" => "Grep",
-        "glob" | "find_file" => "Glob",
-        "list_dir" | "ls" => "LS",
-        "web_fetch" | "fetch_url" => "WebFetch",
-        "web_search" => "WebSearch",
-        _ => "Tool",
+async fn request_permission(
+    event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<CommandEnvelope>,
+    connected_once: &mut bool,
+    session_id: &str,
+    tc: &LlmToolCall,
+) -> PermissionDecision {
+    let raw_input = serde_json::from_str::<serde_json::Value>(&tc.arguments).ok();
+    let permission_tool_call = types::ToolCall {
+        tool_call_id: tc.id.clone(),
+        title: format!("{} {}", tc.name, summarize_args(&tc.arguments)),
+        kind: tc.name.clone(),
+        status: "pending".to_owned(),
+        content: Vec::new(),
+        raw_input,
+        raw_output: None,
+        output_metadata: None,
+        task_metadata: None,
+        locations: Vec::new(),
+        meta: None,
+    };
+    let options = vec![
+        types::PermissionOption {
+            option_id: "allow_once".to_owned(),
+            name: "Allow once".to_owned(),
+            description: None,
+            kind: "allow_once".to_owned(),
+        },
+        types::PermissionOption {
+            option_id: "allow_session".to_owned(),
+            name: format!("Allow {} for this session", tc.name),
+            description: None,
+            kind: "allow_session".to_owned(),
+        },
+        types::PermissionOption {
+            option_id: "reject_once".to_owned(),
+            name: "Reject".to_owned(),
+            description: None,
+            kind: "reject_once".to_owned(),
+        },
+    ];
+    let request = types::PermissionRequest { tool_call: permission_tool_call, options, display: None };
+
+    handle_bridge_event(
+        event_tx,
+        cmd_tx,
+        connected_once,
+        false,
+        EventEnvelope {
+            request_id: None,
+            event: BridgeEvent::PermissionRequest {
+                session_id: session_id.to_owned(),
+                request,
+            },
+        },
+    );
+
+    while let Some(env) = cmd_rx.recv().await {
+        match env.command {
+            BridgeCommand::PermissionResponse { tool_call_id, outcome, .. }
+                if tool_call_id == tc.id =>
+            {
+                return match outcome {
+                    types::PermissionOutcome::Selected { option_id } => match option_id.as_str() {
+                        "allow_once" => PermissionDecision::AllowOnce,
+                        "allow_session" => PermissionDecision::AllowSession,
+                        _ => PermissionDecision::Reject,
+                    },
+                    types::PermissionOutcome::Cancelled => PermissionDecision::Reject,
+                };
+            }
+            BridgeCommand::CancelTurn { .. } => return PermissionDecision::Reject,
+            _ => {
+                // Drop unrelated commands during permission wait (v0.1 simplification).
+            }
+        }
     }
+    PermissionDecision::Reject
 }
 
-#[cfg(test)]
-mod tests {
-    use super::sdk_kind_for;
-
-    #[test]
-    fn maps_known_tool_names_to_pascal_case() {
-        assert_eq!(sdk_kind_for("read_file"), "Read");
-        assert_eq!(sdk_kind_for("write_file"), "Write");
-        assert_eq!(sdk_kind_for("bash"), "Bash");
-        assert_eq!(sdk_kind_for("run_command"), "Bash");
-        assert_eq!(sdk_kind_for("web_fetch"), "WebFetch");
-    }
-
-    #[test]
-    fn falls_back_to_tool_for_unknown_names() {
-        assert_eq!(sdk_kind_for("something_weird"), "Tool");
-        assert_eq!(sdk_kind_for(""), "Tool");
-    }
-}
 
 fn emit_assistant_chunk(
     event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,

@@ -28,17 +28,26 @@ Goal: Mochi can actually do work, not just chat. Verified on Luna-SRSA (Qwen3 ba
 - [x] **Tool 1: `read_file`** — 200KB cap, tilde expand, returns header + body
 - [x] **Tool 2: `find_file`** — substring search via `ignore::WalkBuilder`, respects `.gitignore`, max depth 8, top 20 matches
 
-### Sprint 6b — Write tools + permission flow (next)
+### Sprint 6b — Permission flow + read-side web tools (shipped)
 
-- [ ] **Tool: `web_fetch`** — `reqwest` GET + `pulldown_cmark` HTML→Markdown. Read-only, no permission needed.
-- [ ] **Tool: `bash`** — `tokio::process::Command`. Requires `PermissionRequest` event before exec.
-- [ ] **Tool: `write_file` / `edit_file`** — inline diff preview, requires `PermissionRequest`.
-- [ ] Wire `emit_permission_request` from `llama_lifecycle` reusing CCR's `handle_permission_request_event` channel. Wait for `BridgeCommand::PermissionResponse` before execution.
-- [ ] **Tool: `web_search`** — Tavily / Brave / Serper API, `MOCHI_SEARCH_API_KEY` env var.
+- [x] Refactored all tools to Anthropic SDK PascalCase names + arg conventions (`Read` with `file_path`, `Glob` with `pattern`, etc.) — dropped the `sdk_kind_for` mapper shim
+- [x] **Tool: `WebFetch`** — `reqwest` GET, HTML→text stripper (scripts/styles/comments dropped, entities decoded, whitespace collapsed), 32KB output cap
+- [x] **Tool: `WebSearch`** — DuckDuckGo HTML endpoint, no API key, parses `uddg` redirect wrapper to clean URLs, returns `title | url | snippet` per result
+- [x] **Tool: `Bash`** — `tokio::process::Command` via `bash -lc`, 30s default timeout (max 5min), 100KB stdout cap, stderr inlined when present, exit code surfaced on non-zero
+- [x] Permission flow: `request_permission` emits `BridgeEvent::PermissionRequest`, drains `cmd_rx` for matching `PermissionResponse`, branches AllowOnce / AllowSession / Reject. `allow_set: HashSet<String>` per-session so "Allow for session" doesn't re-prompt.
+- [x] CCR's inline permission UI rendered free (zero new render code) — Ctrl+y / Ctrl+a / Ctrl+n shortcuts inherited
+
+### Sprint 6c — Write tools (next)
+
+- [ ] **Tool: `Write`** — full file write. Requires `PermissionRequest`. Emit `ToolCallContent::Diff { old_path, new_path, old, new }` so CCR renders inline diff before approval.
+- [ ] **Tool: `Edit`** — string-replace within a file. Required: `file_path`, `old_string`, `new_string`. Optional `replace_all`. Same Diff emission as `Write`.
+- [ ] **Tool: `MultiEdit`** — batched edits in one call. Maps to multiple Diff blocks.
+- [ ] Backup-on-write — copy `path.bak` before overwriting so `/undo` can recover the last edit.
+- [ ] `/undo` slash command — pop last write/edit from a session backup stack.
 
 Decision points still open:
-- Permission UX: per-call confirm (Claude Code style) vs. trust-this-session vs. allowlist file.
-- Sandbox depth: chroot? Docker? `nsjail`? For v0.1 likely CWD-rooted with denylist.
+- Permission UX cache: scope by tool name (current) vs. scope by `tool name + arg fingerprint` (safer — `Bash session` allows any command vs. only the approved one).
+- Sandbox depth: `chroot`? Docker? `nsjail`? Currently CWD-rooted with the OS-level denylist (no `sudo`, no `rm -rf /`).
 
 ---
 

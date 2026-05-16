@@ -1978,6 +1978,7 @@ dependencies = [
  "dirs",
  "eventsource-stream",
  "futures",
+ "globset",
  "ignore",
  "image",
  "notify",
