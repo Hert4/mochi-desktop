@@ -19,13 +19,7 @@ mod web_search;
 /// All tool specs advertised to the model on every turn.
 #[must_use]
 pub fn available_tools() -> Vec<ToolDef> {
-    vec![
-        read::spec(),
-        glob::spec(),
-        web_search::spec(),
-        web_fetch::spec(),
-        bash::spec(),
-    ]
+    vec![read::spec(), glob::spec(), web_search::spec(), web_fetch::spec(), bash::spec()]
 }
 
 /// Whether running a tool requires explicit user permission via the

@@ -19,11 +19,7 @@ fn print_pet(mood: PetMood, caption: &str) {
     }
 }
 
-fn compose_system(
-    base: &str,
-    active: Option<&Skill>,
-    memory: Option<&MemoryStore>,
-) -> String {
+fn compose_system(base: &str, active: Option<&Skill>, memory: Option<&MemoryStore>) -> String {
     let mut out = String::new();
     if let Some(store) = memory {
         let facts = store.list(None).unwrap_or_default();
@@ -68,9 +64,13 @@ fn handle_slash(input: &str, state: &mut ReplState<'_>) -> SlashOutcome {
         "/quit" | "/exit" => SlashOutcome::Quit,
         "/help" => {
             println!("  /quit                                  exit");
-            println!("  /reset                                 clear conversation (keep system+memory)");
+            println!(
+                "  /reset                                 clear conversation (keep system+memory)"
+            );
             println!("  /skill list|use NAME|off|show NAME     skill management");
-            println!("  /memory list [KIND]                    list facts (profile|concept|state|behavioral)");
+            println!(
+                "  /memory list [KIND]                    list facts (profile|concept|state|behavioral)"
+            );
             println!("  /memory remember KIND SLUG CONTENT     store a fact");
             println!("  /memory forget SLUG                    delete a fact");
             println!("  /memory profile CONTENT                set the user profile blurb");
@@ -102,8 +102,11 @@ fn handle_skill(parts: &[&str], state: &mut ReplState<'_>) -> SlashOutcome {
                 println!("  put SKILL.md files under ~/.mochi/skills/<name>/SKILL.md");
             } else {
                 for (name, skill) in state.skills {
-                    let mark =
-                        if state.active_skill.as_deref() == Some(name.as_str()) { "*" } else { " " };
+                    let mark = if state.active_skill.as_deref() == Some(name.as_str()) {
+                        "*"
+                    } else {
+                        " "
+                    };
                     let desc = if skill.description.is_empty() {
                         "(no description)"
                     } else {
@@ -187,11 +190,7 @@ fn handle_memory(raw: &str, parts: &[&str], state: &mut ReplState<'_>) -> SlashO
                 println!("  usage: /memory remember KIND SLUG CONTENT\n");
                 return SlashOutcome::Handled;
             }
-            let content_start = raw
-                .splitn(5, char::is_whitespace)
-                .nth(4)
-                .unwrap_or("")
-                .trim();
+            let content_start = raw.splitn(5, char::is_whitespace).nth(4).unwrap_or("").trim();
             if content_start.is_empty() {
                 println!("  usage: /memory remember KIND SLUG CONTENT\n");
                 return SlashOutcome::Handled;
@@ -205,10 +204,7 @@ fn handle_memory(raw: &str, parts: &[&str], state: &mut ReplState<'_>) -> SlashO
                 Ok(_) => {
                     rebuild_system(state);
                     let scope_label = scope_owned.as_deref().unwrap_or("-");
-                    println!(
-                        "  remembered [{}] {slug} (scope={scope_label})\n",
-                        kind.as_str()
-                    );
+                    println!("  remembered [{}] {slug} (scope={scope_label})\n", kind.as_str());
                 }
                 Err(err) => println!("  error: {err}\n"),
             }
@@ -265,14 +261,13 @@ pub async fn run(url: String, system: String, temperature: f32) -> anyhow::Resul
         None => BTreeMap::new(),
     };
 
-    let memory_store = memory::default_db_path()
-        .and_then(|p| match MemoryStore::open(&p) {
-            Ok(s) => Some(s),
-            Err(err) => {
-                eprintln!("warn: failed to open memory db: {err}");
-                None
-            }
-        });
+    let memory_store = memory::default_db_path().and_then(|p| match MemoryStore::open(&p) {
+        Ok(s) => Some(s),
+        Err(err) => {
+            eprintln!("warn: failed to open memory db: {err}");
+            None
+        }
+    });
 
     println!();
     print_pet(PetMood::Idle, &format!("mochi @ {}", config.url));

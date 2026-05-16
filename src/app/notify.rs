@@ -118,9 +118,7 @@ fn send_desktop_notification(event: NotifyEvent) {
         NotifyEvent::PermissionRequired => {
             ("Mochi", "Permission required -- waiting for your approval")
         }
-        NotifyEvent::QuestionRequired => {
-            ("Mochi", "Question required -- waiting for your input")
-        }
+        NotifyEvent::QuestionRequired => ("Mochi", "Question required -- waiting for your input"),
         NotifyEvent::TurnComplete => ("Mochi", "Turn complete"),
     };
     std::thread::spawn(move || {

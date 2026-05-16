@@ -63,12 +63,7 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
         _ => {
             let start = offset.unwrap_or(1).saturating_sub(1);
             let take = limit.unwrap_or(usize::MAX);
-            full_text
-                .lines()
-                .skip(start)
-                .take(take)
-                .collect::<Vec<_>>()
-                .join("\n")
+            full_text.lines().skip(start).take(take).collect::<Vec<_>>().join("\n")
         }
     };
 

@@ -211,7 +211,10 @@ fn handle_skill_submit(app: &mut App, args: &[&str]) -> bool {
     match sub {
         "list" | "" => {
             if map.is_empty() {
-                info(app, "no skills installed. Put SKILL.md under ~/.mochi/skills/<name>/SKILL.md");
+                info(
+                    app,
+                    "no skills installed. Put SKILL.md under ~/.mochi/skills/<name>/SKILL.md",
+                );
             } else {
                 let mut out = String::from("skills:\n");
                 for (name, s) in &map {

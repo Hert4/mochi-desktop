@@ -215,13 +215,9 @@ mod tests {
     #[test]
     fn every_character_renders_every_mood() {
         for ch in PetCharacter::all() {
-            for m in [
-                PetMood::Idle,
-                PetMood::Thinking,
-                PetMood::Happy,
-                PetMood::Sad,
-                PetMood::Sleeping,
-            ] {
+            for m in
+                [PetMood::Idle, PetMood::Thinking, PetMood::Happy, PetMood::Sad, PetMood::Sleeping]
+            {
                 let s = sprite_for(*ch, m);
                 assert!(s.lines().count() >= 3, "{ch:?}/{m:?} sprite too short");
             }
@@ -243,13 +239,8 @@ mod tests {
 
     #[test]
     fn labels_are_non_empty() {
-        for m in [
-            PetMood::Idle,
-            PetMood::Thinking,
-            PetMood::Happy,
-            PetMood::Sad,
-            PetMood::Sleeping,
-        ] {
+        for m in [PetMood::Idle, PetMood::Thinking, PetMood::Happy, PetMood::Sad, PetMood::Sleeping]
+        {
             assert!(!label(m).is_empty());
         }
     }

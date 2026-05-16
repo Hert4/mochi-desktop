@@ -68,10 +68,7 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     if !status.is_success() {
         return Err(anyhow::anyhow!("WebSearch: {url} returned {status}"));
     }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| anyhow::anyhow!("WebSearch: read body: {e}"))?;
+    let body = resp.text().await.map_err(|e| anyhow::anyhow!("WebSearch: read body: {e}"))?;
 
     let results = parse_ddg_html(&body, count);
     if results.is_empty() {
@@ -176,11 +173,7 @@ fn decode_ddg_redirect(href: &str) -> String {
         let end = after.find('&').unwrap_or(after.len());
         return urldecode(&after[..end]);
     }
-    if href.starts_with("//") {
-        format!("https:{href}")
-    } else {
-        href.to_owned()
-    }
+    if href.starts_with("//") { format!("https:{href}") } else { href.to_owned() }
 }
 
 fn urlencode(s: &str) -> String {

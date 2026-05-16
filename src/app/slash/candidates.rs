@@ -202,7 +202,8 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/plugins".into(), "Open plugins".into());
     by_name.insert("/status".into(), "Show session status".into());
     by_name.insert("/usage".into(), "Open usage".into());
-    by_name.insert("/memory".into(), "Manage Mochi memory (profile/concept/state/behavioral)".into());
+    by_name
+        .insert("/memory".into(), "Manage Mochi memory (profile/concept/state/behavioral)".into());
     by_name.insert("/skill".into(), "List or inspect installed Mochi skills".into());
     by_name.insert("/pet".into(), "List or show Mochi pet characters".into());
     by_name.insert("/clear".into(), "Clear the chat view (keeps memory and active skill)".into());

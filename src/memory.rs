@@ -165,18 +165,21 @@ impl MemoryStore {
     }
 
     pub fn touch_used(&self, id: i64) -> anyhow::Result<()> {
-        self.conn.execute(
-            "UPDATE facts SET last_used = ?1 WHERE id = ?2",
-            params![now_secs(), id],
-        )?;
+        self.conn
+            .execute("UPDATE facts SET last_used = ?1 WHERE id = ?2", params![now_secs(), id])?;
         Ok(())
     }
 }
 
 fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Fact> {
     let kind_str: String = row.get(1)?;
-    let kind = FactKind::parse(&kind_str)
-        .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, "unknown kind".into()))?;
+    let kind = FactKind::parse(&kind_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            "unknown kind".into(),
+        )
+    })?;
     Ok(Fact {
         id: row.get(0)?,
         kind,
@@ -191,8 +194,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Fact> {
 /// Compose memory facts into a system prompt section, ordered: profile, concept, behavioral (filtered by active skill), state.
 #[must_use]
 pub fn render_memory_section(facts: &[Fact], active_skill: Option<&str>) -> String {
-    let has_profile =
-        facts.iter().any(|f| f.kind == FactKind::Profile);
+    let has_profile = facts.iter().any(|f| f.kind == FactKind::Profile);
     let has_concept = facts.iter().any(|f| f.kind == FactKind::Concept);
     let scope = active_skill.unwrap_or("default");
     let has_behavioral = facts.iter().any(|f| {
@@ -229,8 +231,7 @@ pub fn render_memory_section(facts: &[Fact], active_skill: Option<&str>) -> Stri
     let behavioral: Vec<&Fact> = facts
         .iter()
         .filter(|f| {
-            f.kind == FactKind::Behavioral
-                && f.skill_scope.as_deref().unwrap_or("default") == scope
+            f.kind == FactKind::Behavioral && f.skill_scope.as_deref().unwrap_or("default") == scope
         })
         .collect();
     if !behavioral.is_empty() {
@@ -321,7 +322,10 @@ mod tests {
         let c_idx = rendered.find("### Known concepts").unwrap();
         let b_idx = rendered.find("### Behavioral preferences").unwrap();
         let st_idx = rendered.find("### Current state").unwrap();
-        assert!(p_idx < c_idx && c_idx < b_idx && b_idx < st_idx, "wrong section order: {rendered}");
+        assert!(
+            p_idx < c_idx && c_idx < b_idx && b_idx < st_idx,
+            "wrong section order: {rendered}"
+        );
     }
 
     #[test]

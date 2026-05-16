@@ -6,12 +6,12 @@ use crate::agent::llama_client::{
     ChatEvent, LlamaConfig, LlmToolCall, Message, RoleToolCall, RoleToolCallFunction,
     stream_chat_with_tools,
 };
-use crate::tools;
 use crate::agent::types;
 use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
 use crate::memory::{self, MemoryStore, render_memory_section};
 use crate::memory_capture;
 use crate::skills::{self, Skill};
+use crate::tools;
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
@@ -163,9 +163,7 @@ pub(super) async fn run_llama_task(
 }
 
 fn load_skills_cache() -> BTreeMap<String, Skill> {
-    skills::default_skills_dir()
-        .and_then(|p| skills::load_all(&p).ok())
-        .unwrap_or_default()
+    skills::default_skills_dir().and_then(|p| skills::load_all(&p).ok()).unwrap_or_default()
 }
 
 fn extract_user_text(chunks: &[types::PromptChunk]) -> String {
@@ -297,15 +295,8 @@ async fn handle_prompt(
 
         for tc in &tool_calls {
             let allowed = if tools::needs_permission(&tc.name) && !allow_set.contains(&tc.name) {
-                match request_permission(
-                    event_tx,
-                    cmd_tx,
-                    cmd_rx,
-                    connected_once,
-                    &session_id,
-                    tc,
-                )
-                .await
+                match request_permission(event_tx, cmd_tx, cmd_rx, connected_once, &session_id, tc)
+                    .await
                 {
                     PermissionDecision::AllowOnce => true,
                     PermissionDecision::AllowSession => {
@@ -456,11 +447,7 @@ fn emit_tool_call_completed(
 
 fn summarize_args(args: &str) -> String {
     let trimmed = args.trim();
-    if trimmed.len() <= 80 {
-        trimmed.to_owned()
-    } else {
-        format!("{}…", &trimmed[..77])
-    }
+    if trimmed.len() <= 80 { trimmed.to_owned() } else { format!("{}…", &trimmed[..77]) }
 }
 
 async fn request_permission(
@@ -505,7 +492,8 @@ async fn request_permission(
             kind: "reject_once".to_owned(),
         },
     ];
-    let request = types::PermissionRequest { tool_call: permission_tool_call, options, display: None };
+    let request =
+        types::PermissionRequest { tool_call: permission_tool_call, options, display: None };
 
     handle_bridge_event(
         event_tx,
@@ -514,10 +502,7 @@ async fn request_permission(
         false,
         EventEnvelope {
             request_id: None,
-            event: BridgeEvent::PermissionRequest {
-                session_id: session_id.to_owned(),
-                request,
-            },
+            event: BridgeEvent::PermissionRequest { session_id: session_id.to_owned(), request },
         },
     );
 
@@ -543,7 +528,6 @@ async fn request_permission(
     }
     PermissionDecision::Reject
 }
-
 
 fn emit_assistant_chunk(
     event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
@@ -657,7 +641,10 @@ fn synth_initialize_result() -> types::InitializeResult {
 fn synth_current_model(url: &str) -> types::CurrentModel {
     types::CurrentModel {
         requested_id: None,
-        resolved_id: format!("llama@{}", url.trim_start_matches("http://").trim_start_matches("https://")),
+        resolved_id: format!(
+            "llama@{}",
+            url.trim_start_matches("http://").trim_start_matches("https://")
+        ),
         display_name_short: "llama".to_owned(),
         display_name_long: format!("local llama.cpp ({url})"),
         catalog_id: None,

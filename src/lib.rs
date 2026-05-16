@@ -55,7 +55,11 @@ impl DiagnosticsPreset {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "mochi", version, about = "Terminal AI agent with a pixel-art pet companion, local-first via llama.cpp")]
+#[command(
+    name = "mochi",
+    version,
+    about = "Terminal AI agent with a pixel-art pet companion, local-first via llama.cpp"
+)]
 #[command(
     after_help = "Examples:\n  mochi --provider llamacpp\n  mochi chat\n  mochi --provider llamacpp --pet bunny\n  mochi --enable-logs --diagnostics-preset session"
 )]

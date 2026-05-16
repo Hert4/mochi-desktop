@@ -52,17 +52,14 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| anyhow::anyhow!("web_fetch: read body failed: {e}"))?;
+    let bytes =
+        resp.bytes().await.map_err(|e| anyhow::anyhow!("web_fetch: read body failed: {e}"))?;
 
     let raw_truncated = bytes.len() > MAX_BYTES_RAW;
     let slice = if raw_truncated { &bytes[..MAX_BYTES_RAW] } else { &bytes[..] };
     let raw = String::from_utf8_lossy(slice);
 
-    let is_html = content_type.to_lowercase().contains("html")
-        || raw.trim_start().starts_with('<');
+    let is_html = content_type.to_lowercase().contains("html") || raw.trim_start().starts_with('<');
     let mut text = if is_html { html_to_text(&raw) } else { raw.into_owned() };
 
     let output_truncated = text.len() > MAX_BYTES_OUTPUT;

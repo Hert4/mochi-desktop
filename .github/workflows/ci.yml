@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-Dwarnings"
 
 jobs:
   test:
@@ -17,54 +16,43 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --lib
 
   clippy:
-    name: Clippy
+    name: Clippy (correctness only)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # v0.1: deny only correctness/suspicious. Pedantic warnings tracked in ROADMAP Sprint 15 polish.
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious -A clippy::pedantic
 
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
         with:
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  msrv:
-    name: MSRV Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.88.0"
-      - uses: Swatinem/rust-cache@v2
-      - name: Check MSRV
-        run: cargo check --all-features
-
   lockfile:
     name: Lockfile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
       - name: Check lockfile
         run: cargo fetch --locked

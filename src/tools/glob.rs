@@ -45,12 +45,12 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
         return Err(anyhow::anyhow!("Glob: base {} does not exist", base_path.display()));
     }
 
-    let canonical_pattern = if pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
-    {
-        pattern.to_owned()
-    } else {
-        format!("**/{pattern}")
-    };
+    let canonical_pattern =
+        if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+            pattern.to_owned()
+        } else {
+            format!("**/{pattern}")
+        };
 
     let matcher = Glob::new(&canonical_pattern)
         .map_err(|e| anyhow::anyhow!("Glob: invalid pattern `{canonical_pattern}`: {e}"))?
@@ -66,10 +66,8 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     }
 
     let shown = hits.len().min(MAX_HITS);
-    let mut out = format!(
-        "{} match(es) for `{canonical_pattern}` (showing {shown}):\n",
-        hits.len()
-    );
+    let mut out =
+        format!("{} match(es) for `{canonical_pattern}` (showing {shown}):\n", hits.len());
     for p in hits.into_iter().take(MAX_HITS) {
         out.push_str(&format!("- {}\n", p.display()));
     }
@@ -101,9 +99,7 @@ fn collect_hits(base: &Path, matcher: &GlobMatcher) -> Vec<PathBuf> {
 
 fn expand(s: &str) -> anyhow::Result<PathBuf> {
     if let Some(rest) = s.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|h| h.join(rest))
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve home"))
+        dirs::home_dir().map(|h| h.join(rest)).ok_or_else(|| anyhow::anyhow!("cannot resolve home"))
     } else if s == "~" {
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve home"))
     } else {

@@ -146,14 +146,15 @@ Goal: from "auto-capture flat facts" toward the paper's active reasoning.
 
 ---
 
-## Sprint 15 — Performance / efficiency
+## Sprint 15 — Performance & lint polish
 
 Items from the simplify-skill review that were deferred:
 
 - [ ] Cache `MemoryStore` in `App` — currently opens new SQLite connection per `/memory` invocation.
-- [ ] Move `handle_prompt`'s 7-arg signature into a small `LlamaTurnContext` struct.
+- [ ] Move `handle_prompt`'s 9-arg signature into a small `LlamaTurnContext` struct.
 - [ ] Profile the auto-capture call — if Luna handles 256-token prompts in <500ms, fine. If slower, move to parallel-not-blocking and apply on next turn (currently spawn_local, OK).
 - [ ] Build with `RUSTFLAGS="-C target-cpu=native -C lto=fat"` for release; strip symbols.
+- [ ] **Re-enable strict CI clippy.** Currently CI runs `cargo clippy -- -D clippy::correctness -D clippy::suspicious -A clippy::pedantic`. Cleanup work needed in Mochi-new files (`src/tools/*`, `src/memory.rs`, `src/memory_capture.rs`, `src/app/connect/llama_lifecycle.rs`, `src/app/slash/executors.rs`, `src/skills.rs`): `format!()` append → `write!()`, function-too-long splits, `map().unwrap_or()` → `map_or()`, unnecessary raw string hashes, doc backticks. Then drop the `-A clippy::pedantic` exception so CI matches CCR's original lint strictness.
 
 ---
 

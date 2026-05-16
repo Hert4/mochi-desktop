@@ -2,6 +2,7 @@
 
 A local-first terminal pet companion that remembers you. Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp). Rust + Ratatui TUI.
 
+[![CI](https://github.com/Hert4/mochi/actions/workflows/ci.yml/badge.svg)](https://github.com/Hert4/mochi/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-purple)](./CHANGELOG.md)

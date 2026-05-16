@@ -60,7 +60,8 @@ pub fn parse_skill(raw: &str, source: &Path) -> anyhow::Result<Skill> {
 }
 
 fn split_frontmatter(raw: &str) -> anyhow::Result<(BTreeMap<String, String>, String)> {
-    let normalized: String = if raw.contains("\r\n") { raw.replace("\r\n", "\n") } else { raw.to_owned() };
+    let normalized: String =
+        if raw.contains("\r\n") { raw.replace("\r\n", "\n") } else { raw.to_owned() };
     let trimmed = normalized.trim_start_matches(|c: char| c == '\u{feff}' || c.is_whitespace());
     let Some(rest) = trimmed.strip_prefix("---") else {
         return Err(anyhow::anyhow!("file does not start with `---` frontmatter delimiter"));
