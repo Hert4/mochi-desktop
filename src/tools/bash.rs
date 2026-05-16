@@ -2,6 +2,7 @@
 //! `timeout` (optional ms). Execution is sandbox-free for v0.1 — the runner is
 //! expected to gate every Bash call behind a user permission prompt.
 
+use super::ToolResult;
 use crate::agent::llama_client::ToolDef;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -33,7 +34,7 @@ pub fn spec() -> ToolDef {
     )
 }
 
-pub async fn execute(args: &Value) -> anyhow::Result<String> {
+pub async fn execute(args: &Value) -> anyhow::Result<ToolResult> {
     let command = args
         .get("command")
         .and_then(Value::as_str)
@@ -77,9 +78,9 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     }
     let exit = output.status.code().unwrap_or(-1);
     if exit != 0 {
-        return Ok(format!("$ {command}\n[exit {exit}]\n{stdout}"));
+        return Ok(ToolResult::text(format!("$ {command}\n[exit {exit}]\n{stdout}")));
     }
-    Ok(format!("$ {command}\n{stdout}"))
+    Ok(ToolResult::text(format!("$ {command}\n{stdout}")))
 }
 
 #[cfg(test)]
@@ -90,8 +91,8 @@ mod tests {
     #[tokio::test]
     async fn captures_stdout() {
         let out = execute(&json!({"command": "echo hello mochi"})).await.unwrap();
-        assert!(out.contains("hello mochi"));
-        assert!(!out.contains("[exit"));
+        assert!(out.model_text.contains("hello mochi"));
+        assert!(!out.model_text.contains("[exit"));
     }
 
     #[tokio::test]
@@ -99,9 +100,9 @@ mod tests {
         let out = execute(&json!({"command": "echo on-stdout; echo on-stderr 1>&2; exit 3"}))
             .await
             .unwrap();
-        assert!(out.contains("on-stdout"));
-        assert!(out.contains("on-stderr"));
-        assert!(out.contains("[exit 3]"));
+        assert!(out.model_text.contains("on-stdout"));
+        assert!(out.model_text.contains("on-stderr"));
+        assert!(out.model_text.contains("[exit 3]"));
     }
 
     #[tokio::test]

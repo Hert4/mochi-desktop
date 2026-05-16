@@ -313,6 +313,9 @@ async fn handle_prompt(
 
             if !allowed {
                 let denial = "User denied permission for this tool call.";
+                let denial_block = vec![types::ToolCallContent::Content {
+                    content: types::ContentBlock::Text { text: denial.to_owned() },
+                }];
                 emit_tool_call_completed(
                     event_tx,
                     cmd_tx,
@@ -320,6 +323,7 @@ async fn handle_prompt(
                     &session_id,
                     tc,
                     "failed",
+                    denial_block,
                     denial,
                 );
                 history.push(Message::tool_response(tc.id.clone(), denial.to_owned()));
@@ -327,9 +331,15 @@ async fn handle_prompt(
             }
 
             let result = tools::execute(&tc.name, &tc.arguments).await;
-            let (status, output) = match result {
-                Ok(o) => ("completed", o),
-                Err(e) => ("failed", format!("tool error: {e}")),
+            let (status, ui_content, model_text) = match result {
+                Ok(r) => ("completed", r.ui_content, r.model_text),
+                Err(e) => {
+                    let msg = format!("tool error: {e}");
+                    let block = vec![types::ToolCallContent::Content {
+                        content: types::ContentBlock::Text { text: msg.clone() },
+                    }];
+                    ("failed", block, msg)
+                }
             };
             emit_tool_call_completed(
                 event_tx,
@@ -338,9 +348,10 @@ async fn handle_prompt(
                 &session_id,
                 tc,
                 status,
-                &output,
+                ui_content,
+                &model_text,
             );
-            history.push(Message::tool_response(tc.id.clone(), output));
+            history.push(Message::tool_response(tc.id.clone(), model_text));
         }
     }
 
@@ -409,6 +420,7 @@ fn emit_tool_call_started(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_tool_call_completed(
     event_tx: &mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
     cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
@@ -416,17 +428,15 @@ fn emit_tool_call_completed(
     session_id: &str,
     tc: &LlmToolCall,
     status: &str,
-    output: &str,
+    ui_content: Vec<types::ToolCallContent>,
+    raw_output: &str,
 ) {
-    let content = vec![types::ToolCallContent::Content {
-        content: types::ContentBlock::Text { text: output.to_owned() },
-    }];
     let update = types::ToolCallUpdate {
         tool_call_id: tc.id.clone(),
         fields: types::ToolCallUpdateFields {
             status: Some(status.to_owned()),
-            content: Some(content),
-            raw_output: Some(output.to_owned()),
+            content: Some(ui_content),
+            raw_output: Some(raw_output.to_owned()),
             ..Default::default()
         },
     };

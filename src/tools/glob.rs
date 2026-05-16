@@ -3,6 +3,7 @@
 //! Patterns without wildcards are matched as `**/{pattern}` so a bare filename
 //! like "Cargo.toml" still finds nested matches.
 
+use super::ToolResult;
 use crate::agent::llama_client::ToolDef;
 use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
@@ -34,7 +35,7 @@ pub fn spec() -> ToolDef {
     )
 }
 
-pub async fn execute(args: &Value) -> anyhow::Result<String> {
+pub async fn execute(args: &Value) -> anyhow::Result<ToolResult> {
     let pattern = args
         .get("pattern")
         .and_then(Value::as_str)
@@ -59,10 +60,10 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     let hits = collect_hits(&base_path, &matcher);
 
     if hits.is_empty() {
-        return Ok(format!(
+        return Ok(ToolResult::text(format!(
             "no files matching `{canonical_pattern}` under {} (.gitignore respected, depth ≤ {MAX_DEPTH})",
             base_path.display()
-        ));
+        )));
     }
 
     let shown = hits.len().min(MAX_HITS);
@@ -71,7 +72,7 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     for p in hits.into_iter().take(MAX_HITS) {
         out.push_str(&format!("- {}\n", p.display()));
     }
-    Ok(out)
+    Ok(ToolResult::text(out))
 }
 
 fn collect_hits(base: &Path, matcher: &GlobMatcher) -> Vec<PathBuf> {
@@ -128,8 +129,8 @@ mod tests {
         }))
         .await
         .unwrap();
-        assert!(out.contains("Cargo.toml"));
-        assert!(out.contains("1 match"));
+        assert!(out.model_text.contains("Cargo.toml"));
+        assert!(out.model_text.contains("1 match"));
     }
 
     #[tokio::test]
@@ -144,9 +145,9 @@ mod tests {
         }))
         .await
         .unwrap();
-        assert!(out.contains("a.rs"));
-        assert!(out.contains("b.rs"));
-        assert!(!out.contains("c.txt"));
+        assert!(out.model_text.contains("a.rs"));
+        assert!(out.model_text.contains("b.rs"));
+        assert!(!out.model_text.contains("c.txt"));
     }
 
     #[tokio::test]

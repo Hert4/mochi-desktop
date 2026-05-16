@@ -1,6 +1,7 @@
 //! `Read` tool. Mirrors the Anthropic SDK `Read` schema: `file_path`, optional
 //! `offset` and `limit` for line-windowed reads.
 
+use super::ToolResult;
 use crate::agent::llama_client::ToolDef;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -33,7 +34,7 @@ pub fn spec() -> ToolDef {
     )
 }
 
-pub async fn execute(args: &Value) -> anyhow::Result<String> {
+pub async fn execute(args: &Value) -> anyhow::Result<ToolResult> {
     let path_str = args
         .get("file_path")
         .and_then(Value::as_str)
@@ -72,7 +73,7 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     if truncated_size {
         out.push_str("\n\n[truncated: file exceeds 200KB read limit]");
     }
-    Ok(out)
+    Ok(ToolResult::text(out))
 }
 
 fn expand_tilde(s: &str) -> anyhow::Result<PathBuf> {
@@ -99,8 +100,8 @@ mod tests {
         let mut tmp = NamedTempFile::new().unwrap();
         writeln!(tmp, "alpha\nbeta\ngamma").unwrap();
         let out = execute(&json!({"file_path": tmp.path().to_string_lossy()})).await.unwrap();
-        assert!(out.contains("alpha"));
-        assert!(out.contains("gamma"));
+        assert!(out.model_text.contains("alpha"));
+        assert!(out.model_text.contains("gamma"));
     }
 
     #[tokio::test]
@@ -114,10 +115,10 @@ mod tests {
         }))
         .await
         .unwrap();
-        assert!(out.contains("2"));
-        assert!(out.contains("3"));
-        assert!(!out.contains("\n1"));
-        assert!(!out.contains("\n5"));
+        assert!(out.model_text.contains("2"));
+        assert!(out.model_text.contains("3"));
+        assert!(!out.model_text.contains("\n1"));
+        assert!(!out.model_text.contains("\n5"));
     }
 
     #[tokio::test]

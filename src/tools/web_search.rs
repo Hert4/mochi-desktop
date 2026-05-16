@@ -3,6 +3,7 @@
 //! needed) and strips the result list to a compact `title | url | snippet`
 //! line-per-result format that fits comfortably in a llama context.
 
+use super::ToolResult;
 use crate::agent::llama_client::ToolDef;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -33,7 +34,7 @@ pub fn spec() -> ToolDef {
     )
 }
 
-pub async fn execute(args: &Value) -> anyhow::Result<String> {
+pub async fn execute(args: &Value) -> anyhow::Result<ToolResult> {
     let query = args
         .get("query")
         .and_then(Value::as_str)
@@ -72,9 +73,9 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
 
     let results = parse_ddg_html(&body, count);
     if results.is_empty() {
-        return Ok(format!(
+        return Ok(ToolResult::text(format!(
             "WebSearch `{query}`: 0 results (DuckDuckGo HTML response was empty or unparseable)"
-        ));
+        )));
     }
 
     let mut out = format!("WebSearch `{query}` — {} results:\n\n", results.len());
@@ -85,7 +86,7 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
         }
         out.push('\n');
     }
-    Ok(out)
+    Ok(ToolResult::text(out))
 }
 
 #[derive(Debug, PartialEq, Eq)]

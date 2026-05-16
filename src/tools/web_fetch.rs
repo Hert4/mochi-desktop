@@ -1,3 +1,4 @@
+use super::ToolResult;
 use crate::agent::llama_client::ToolDef;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -24,7 +25,7 @@ pub fn spec() -> ToolDef {
     )
 }
 
-pub async fn execute(args: &Value) -> anyhow::Result<String> {
+pub async fn execute(args: &Value) -> anyhow::Result<ToolResult> {
     let url = args
         .get("url")
         .and_then(Value::as_str)
@@ -79,7 +80,7 @@ pub async fn execute(args: &Value) -> anyhow::Result<String> {
     } else if raw_truncated {
         out.push_str("\n\n[truncated: response exceeds 500KB read limit before stripping]");
     }
-    Ok(out)
+    Ok(ToolResult::text(out))
 }
 
 /// Crude HTML → text stripper. Removes script/style blocks and all tags,

@@ -37,13 +37,14 @@ Goal: Mochi can actually do work, not just chat. Verified on Luna-SRSA (Qwen3 ba
 - [x] Permission flow: `request_permission` emits `BridgeEvent::PermissionRequest`, drains `cmd_rx` for matching `PermissionResponse`, branches AllowOnce / AllowSession / Reject. `allow_set: HashSet<String>` per-session so "Allow for session" doesn't re-prompt.
 - [x] CCR's inline permission UI rendered free (zero new render code) — Ctrl+y / Ctrl+a / Ctrl+n shortcuts inherited
 
-### Sprint 6c — Write tools (next)
+### Sprint 6c — Write tools (shipped)
 
-- [ ] **Tool: `Write`** — full file write. Requires `PermissionRequest`. Emit `ToolCallContent::Diff { old_path, new_path, old, new }` so CCR renders inline diff before approval.
-- [ ] **Tool: `Edit`** — string-replace within a file. Required: `file_path`, `old_string`, `new_string`. Optional `replace_all`. Same Diff emission as `Write`.
-- [ ] **Tool: `MultiEdit`** — batched edits in one call. Maps to multiple Diff blocks.
-- [ ] Backup-on-write — copy `path.bak` before overwriting so `/undo` can recover the last edit.
-- [ ] `/undo` slash command — pop last write/edit from a session backup stack.
+- [x] `ToolResult` struct splitting model-facing `model_text` from UI `Vec<ToolCallContent>` blocks
+- [x] **Tool: `Write`** — full file write, auto-creates parent dirs, emits `ToolCallContent::Diff { old, new, … }` so CCR renders inline diff in the permission overlay
+- [x] **Tool: `Edit`** — string-replace within a file. Unique-match by default; `replace_all: true` overrides. Refuses empty `old_string` and identical-string no-ops with actionable error hints
+- [x] **Tool: `MultiEdit`** — sequential edits applied in-memory and persisted atomically; rolls back the entire batch if any edit fails (no partial writes)
+- [ ] Backup-on-write — copy `path.bak` before overwriting so `/undo` can recover the last edit
+- [ ] `/undo` slash command — pop last write/edit from a session backup stack
 
 Decision points still open:
 - Permission UX cache: scope by tool name (current) vs. scope by `tool name + arg fingerprint` (safer — `Bash session` allows any command vs. only the approved one).
