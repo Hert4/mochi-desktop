@@ -1,6 +1,15 @@
 # Mochi
 
-A terminal AI agent with a pixel-art pet companion. Local-first via [llama.cpp](https://github.com/ggerganov/llama.cpp). Rust + Ratatui TUI.
+A local-first terminal pet companion that remembers you. Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp). Rust + Ratatui TUI.
+
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-purple)](./CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-alpha-yellow)](#known-limitations-v01)
+[![llama.cpp](https://img.shields.io/badge/llama.cpp-compatible-success)](https://github.com/ggerganov/llama.cpp)
+[![Ratatui](https://img.shields.io/badge/TUI-Ratatui-blueviolet)](https://github.com/ratatui-org/ratatui)
+[![Local-first](https://img.shields.io/badge/local--first-yes-brightgreen)](#what-it-is)
+[![Stars](https://img.shields.io/github/stars/Hert4/mochi?style=social)](https://github.com/Hert4/mochi)
 
 ```
    ____________________________
@@ -151,9 +160,54 @@ Apache-2.0. Forked from [claude-code-rust](https://github.com/srothgan/claude-co
 
 This project is not affiliated with Anthropic or the original `claude-code-rust` author.
 
-## Credits
+## Inspiration & references
 
-- **claude-code-rust** by Simon Peter Rothgang — the TUI base
-- **BOOKMARKS** (Koishi's Day 2026, [arxiv 2605.14169](https://arxiv.org/abs/2605.14169)) — 4-kind memory schema
-- **Anthropic Agent Skills** spec — Markdown `SKILL.md` pattern
-- **llama.cpp** — the local inference workhorse
+### Papers / research
+
+- **BOOKMARKS — Efficient Active Storyline Memory for Role-playing** (Koishi's Day 2026, [arxiv 2605.14169](https://arxiv.org/abs/2605.14169))
+  → Adopted: 4-kind memory schema (profile / concept / state / behavioral), per-character behavioral scoping
+  → Deferred: per-turn LLM query proposal, reuse/derive judge, recursive state update (see [ROADMAP.md](./ROADMAP.md) Sprint 11)
+- **Anthropic Agent Skills** ([spec](https://docs.anthropic.com/en/docs/build-with-claude/agent-skills))
+  → Adopted: Markdown `SKILL.md` with YAML frontmatter; load-on-activate, progressive context
+- **OpenAI function-calling spec** ([reference](https://platform.openai.com/docs/guides/function-calling))
+  → Adopted: tool schema, `tool_choice: "auto"`, streaming `delta.tool_calls[]` accumulation
+
+### Projects we stood on / learned from
+
+| Project | What we took |
+|---|---|
+| [claude-code-rust](https://github.com/srothgan/claude-code-rust) (Simon Peter Rothgang, Apache-2.0) | The whole TUI base — chat view, slash dispatcher, input area, layout, syntax highlight, permission UI, theme. Mochi is a fork. |
+| [DeerFlow](https://github.com/bytedance/deer-flow) (ByteDance, MIT) | Skills system architecture (Markdown SKILL.md, load-on-demand), sub-agent vision (planned Sprint 9), sandbox abstraction (planned) |
+| [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Memory pattern — SQLite + Markdown facts file mirror; per-call permission UX; SDK tool naming (`Read`/`Write`/`Bash`/`Glob`/`WebFetch`) |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp) (ggerganov, MIT) | Local inference + OpenAI-compatible HTTP server (`/v1/chat/completions`) — Mochi's default backend |
+
+### Techniques implemented
+
+- **Synthetic BridgeEvent emission** — Mochi's llama runner fakes the same `Connected` / `SessionUpdate` / `TurnComplete` events Anthropic's Node bridge sends, so CCR's TUI renders local llama output without a Node dependency.
+- **Side-channel runtime control** — `LlamaRuntimeCommand` mpsc lets `/memory` and `/skill` slash handlers trigger live system-prompt rebuilds inside the running llama task without restart.
+- **Background memory capture** — after each user turn, a `tokio::task::spawn_local` runs an extraction prompt (`KIND|SLUG|CONTENT` format, 0.0 temperature) and writes durable facts; results arrive in time for the next prompt.
+- **Tool-call loop with permission gating** — max 6 iterations per user prompt; per-tool `needs_permission` flag; per-session `allow_set` so "Allow for session" doesn't re-prompt the same tool.
+- **DDG HTML scraping for `WebSearch`** — no API key, parses `uddg=` redirect wrappers back to clean URLs, returns `title | url | snippet` per result.
+- **Hand-rolled HTML→text stripper for `WebFetch`** — drops `<script>`/`<style>`/comments, decodes common entities, collapses whitespace. Good enough for an LLM to read article-like pages.
+
+### Tech stack
+
+| Layer | Crate / tool |
+|---|---|
+| Async runtime | [`tokio`](https://tokio.rs/) + `LocalSet` for `!Send` UI state |
+| Terminal UI | [`ratatui`](https://github.com/ratatui-org/ratatui) + [`crossterm`](https://github.com/crossterm-rs/crossterm) |
+| HTTP / SSE | [`reqwest`](https://github.com/seanmonstar/reqwest) + [`eventsource-stream`](https://github.com/jpopesculian/eventsource-stream) + [`async-stream`](https://github.com/tokio-rs/async-stream) |
+| LLM backend | llama.cpp HTTP server (OpenAI-compatible) |
+| Memory store | [`rusqlite`](https://github.com/rusqlite/rusqlite) (bundled SQLite) |
+| Filesystem walk / glob | [`ignore`](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) + [`globset`](https://github.com/BurntSushi/ripgrep/tree/master/crates/globset) (both BurntSushi) |
+| Markdown render | [`pulldown_cmark`](https://github.com/raphlinus/pulldown-cmark) + [`tui-markdown`](https://github.com/joshka/tui-markdown) |
+| Syntax highlight | [`syntect`](https://github.com/trishume/syntect) |
+| CLI | [`clap`](https://github.com/clap-rs/clap) |
+| Logging | [`tracing`](https://github.com/tokio-rs/tracing) + JSON appender |
+
+### Conventions followed
+
+- **YAML frontmatter** for `SKILL.md` files — hand-rolled minimal parser (key-value, no full YAML; quoted-string support; `---` delimiters).
+- **PascalCase tool names** — `Read`, `Write`, `Bash`, `Glob`, `WebFetch`, `WebSearch` — matching Anthropic SDK so CCR's `tool_name_label` dispatches to the right icon without a mapper shim.
+- **Anthropic-SDK arg names** — `file_path`, `command`, `pattern`, `url`, `query` — same wire schema as Claude Code, so swapping providers later is a 1-line change.
+- **3-option permission menu** — `allow_once` / `allow_session` / `reject_once`, matching CCR's `PermissionOptionKind` enum.
