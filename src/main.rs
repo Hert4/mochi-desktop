@@ -85,7 +85,10 @@ fn run() -> anyhow::Result<()> {
 
         // Explicit graceful shutdown of managed llama-server (in addition to
         // the Drop kill that fires when the Rc drops — belt and braces).
-        if let Some(server) = app.managed_llama_server.borrow_mut().take() {
+        // Take ownership BEFORE awaiting so the RefCell borrow doesn't span the await
+        // point (clippy::await_holding_refcell_ref).
+        let owned_server = app.managed_llama_server.borrow_mut().take();
+        if let Some(server) = owned_server {
             let _ = server.shutdown().await;
         }
 

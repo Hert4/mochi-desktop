@@ -43,7 +43,8 @@ pub fn render(frame: &mut Frame, body: Rect, app: &App) {
         Style::default().fg(theme::DIM).add_modifier(Modifier::DIM),
     )));
 
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme::DIM));
+    let block =
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme::DIM));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     frame.render_widget(Paragraph::new(lines), inner);

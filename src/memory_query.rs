@@ -47,10 +47,7 @@ BAD (do NOT output):\n\
 - queries longer than 8 words\n\
 - speculative or repeated queries";
 
-pub async fn propose_queries(
-    base_config: &LlamaConfig,
-    scene: &str,
-) -> Vec<MemoryQuery> {
+pub async fn propose_queries(base_config: &LlamaConfig, scene: &str) -> Vec<MemoryQuery> {
     if scene.trim().is_empty() {
         return Vec::new();
     }
@@ -115,8 +112,7 @@ pub fn match_facts(
                 f.skill_scope.as_deref().unwrap_or("default") == scope
             })
             .map(|f| {
-                let score =
-                    overlap(&q_tokens, &tokenize(&format!("{} {}", f.slug, f.content)));
+                let score = overlap(&q_tokens, &tokenize(&format!("{} {}", f.slug, f.content)));
                 (score, f)
             })
             .filter(|(score, _)| *score > 0)
@@ -163,9 +159,30 @@ fn overlap(a: &[String], b: &[String]) -> usize {
 fn is_stopword(w: &str) -> bool {
     matches!(
         w,
-        "the" | "a" | "an" | "is" | "of" | "in" | "on" | "at" | "to" | "for"
-            | "and" | "or" | "user" | "with" | "by" | "from" | "as"
-            | "what" | "who" | "where" | "when" | "how" | "do" | "does"
+        "the"
+            | "a"
+            | "an"
+            | "is"
+            | "of"
+            | "in"
+            | "on"
+            | "at"
+            | "to"
+            | "for"
+            | "and"
+            | "or"
+            | "user"
+            | "with"
+            | "by"
+            | "from"
+            | "as"
+            | "what"
+            | "who"
+            | "where"
+            | "when"
+            | "how"
+            | "do"
+            | "does"
     )
 }
 
@@ -204,16 +221,14 @@ mod tests {
 
     #[test]
     fn parser_caps_at_three_queries() {
-        let raw =
-            "profile|a\nconcept|b\nstate|c\nbehavioral|d\nprofile|e";
+        let raw = "profile|a\nconcept|b\nstate|c\nbehavioral|d\nprofile|e";
         let qs = parse_propose_response(raw);
         assert_eq!(qs.len(), 3);
     }
 
     #[test]
     fn parser_drops_unknown_tags_and_overlong_queries() {
-        let raw =
-            "rubbish|x\nprofile|short ok\nconcept|this query is way too long because it has more than twelve words at minimum okay";
+        let raw = "rubbish|x\nprofile|short ok\nconcept|this query is way too long because it has more than twelve words at minimum okay";
         let qs = parse_propose_response(raw);
         assert_eq!(qs.len(), 1);
         assert_eq!(qs[0].query, "short ok");
@@ -238,10 +253,8 @@ mod tests {
         store.upsert(FactKind::Concept, "language", "Vietnamese, English.", None).unwrap();
         store.upsert(FactKind::Profile, "name", "Duc", None).unwrap();
 
-        let queries = vec![MemoryQuery {
-            tag: FactKind::Concept,
-            query: "user saigon location".into(),
-        }];
+        let queries =
+            vec![MemoryQuery { tag: FactKind::Concept, query: "user saigon location".into() }];
         let hits = match_facts(&queries, &store, None);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].slug, "city");
@@ -250,17 +263,13 @@ mod tests {
     #[test]
     fn match_facts_filters_behavioral_by_active_skill() {
         let store = MemoryStore::open_in_memory().unwrap();
-        store
-            .upsert(FactKind::Behavioral, "tone", "prefers terse", Some("default"))
-            .unwrap();
+        store.upsert(FactKind::Behavioral, "tone", "prefers terse", Some("default")).unwrap();
         store
             .upsert(FactKind::Behavioral, "tone", "very dramatic, sighs", Some("grumpy-cat"))
             .unwrap();
 
-        let queries = vec![MemoryQuery {
-            tag: FactKind::Behavioral,
-            query: "tone preference".into(),
-        }];
+        let queries =
+            vec![MemoryQuery { tag: FactKind::Behavioral, query: "tone preference".into() }];
         let hits_default = match_facts(&queries, &store, None);
         assert_eq!(hits_default.len(), 1);
         assert!(hits_default[0].content.contains("terse"));

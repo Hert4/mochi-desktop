@@ -81,11 +81,7 @@ impl ManagedLlamaServer {
             "spawned managed llama-server",
         );
 
-        Ok(Self {
-            child: Some(child),
-            url: config.url(),
-            model_path: config.model.clone(),
-        })
+        Ok(Self { child: Some(child), url: config.url(), model_path: config.model.clone() })
     }
 
     pub async fn wait_for_ready(&self, timeout: Option<Duration>) -> anyhow::Result<()> {
@@ -186,4 +182,3 @@ mod tests {
         }
     }
 }
-

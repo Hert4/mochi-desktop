@@ -163,11 +163,7 @@ pub async fn observe_behavioral_pattern(
     let messages = vec![Message::system(OBSERVE_SYSTEM), Message::user(prompt)];
     let raw = collect_stream(&cfg, &messages).await?;
     let cleaned = raw.trim().trim_matches('"').trim_matches('\'').trim().to_owned();
-    if cleaned.is_empty() || cleaned.to_lowercase() == "none" {
-        None
-    } else {
-        Some(cleaned)
-    }
+    if cleaned.is_empty() || cleaned.to_lowercase() == "none" { None } else { Some(cleaned) }
 }
 
 /// Build a consolidated narrative profile from the current set of facts.
@@ -219,10 +215,7 @@ pub fn parse_judge_response(raw: &str, existing_id: i64) -> JudgeOutcome {
 /// Pick the most lexically similar candidate by token overlap on slug+content.
 /// We keep this cheap because it runs on every capture; the LLM only sees the
 /// top candidate.
-fn pick_best_candidate<'a>(
-    candidate: &CapturedFact,
-    existing: &'a [&'a Fact],
-) -> Option<&'a Fact> {
+fn pick_best_candidate<'a>(candidate: &CapturedFact, existing: &'a [&'a Fact]) -> Option<&'a Fact> {
     if existing.is_empty() {
         return None;
     }
@@ -321,13 +314,19 @@ mod tests {
     #[test]
     fn parser_accepts_single_word_lowercase() {
         assert!(matches!(parse_judge_response("reuse", 7), JudgeOutcome::Reuse { existing_id: 7 }));
-        assert!(matches!(parse_judge_response("derive", 7), JudgeOutcome::Derive { existing_id: 7 }));
+        assert!(matches!(
+            parse_judge_response("derive", 7),
+            JudgeOutcome::Derive { existing_id: 7 }
+        ));
         assert!(matches!(parse_judge_response("new", 7), JudgeOutcome::New));
     }
 
     #[test]
     fn parser_strips_punctuation_and_capitalization() {
-        assert!(matches!(parse_judge_response("Reuse.", 1), JudgeOutcome::Reuse { existing_id: 1 }));
+        assert!(matches!(
+            parse_judge_response("Reuse.", 1),
+            JudgeOutcome::Reuse { existing_id: 1 }
+        ));
         assert!(matches!(parse_judge_response("**NEW**\n", 2), JudgeOutcome::New));
     }
 
@@ -340,7 +339,10 @@ mod tests {
     #[test]
     fn parser_takes_first_word_only() {
         // Some models output "reuse — same slot"
-        assert!(matches!(parse_judge_response("reuse — same", 5), JudgeOutcome::Reuse { existing_id: 5 }));
+        assert!(matches!(
+            parse_judge_response("reuse — same", 5),
+            JudgeOutcome::Reuse { existing_id: 5 }
+        ));
     }
 
     #[test]
@@ -378,11 +380,8 @@ mod tests {
 
     #[test]
     fn pick_best_returns_none_for_empty() {
-        let candidate = CapturedFact {
-            kind: FactKind::Concept,
-            slug: "x".into(),
-            content: "y".into(),
-        };
+        let candidate =
+            CapturedFact { kind: FactKind::Concept, slug: "x".into(), content: "y".into() };
         let existing: Vec<&Fact> = vec![];
         assert!(pick_best_candidate(&candidate, &existing).is_none());
     }

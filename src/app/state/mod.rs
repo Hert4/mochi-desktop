@@ -359,7 +359,8 @@ pub struct App {
     /// inner `ManagedLlamaServer` kills the child, so a `replace()` here
     /// atomically swaps models. None when running against an externally-managed
     /// llama-server.
-    pub managed_llama_server: std::rc::Rc<std::cell::RefCell<Option<crate::llama_server::ManagedLlamaServer>>>,
+    pub managed_llama_server:
+        std::rc::Rc<std::cell::RefCell<Option<crate::llama_server::ManagedLlamaServer>>>,
     pub pet_character: crate::pet::PetCharacter,
     pub pet_mood: crate::pet::PetMood,
 }

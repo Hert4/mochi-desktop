@@ -195,7 +195,10 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
         "query" => {
             let scene = raw.splitn(3, char::is_whitespace).nth(2).unwrap_or("").trim();
             if scene.is_empty() {
-                info(app, "usage: /memory query <text>\n(LLM proposes search queries against memory and returns matched facts)");
+                info(
+                    app,
+                    "usage: /memory query <text>\n(LLM proposes search queries against memory and returns matched facts)",
+                );
                 return true;
             }
             if !matches!(app.provider, crate::Provider::Llamacpp) {
@@ -215,18 +218,25 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
                 }
             };
             if let Some(tx) = app.llama_runtime_tx.as_ref() {
-                let _ = tx.send(crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::SetMemoryMode(mode));
+                let _ = tx.send(
+                    crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::SetMemoryMode(mode),
+                );
             }
             let label = match mode {
                 crate::app::connect::llama_lifecycle::MemoryMode::All => "all (inject every fact)",
-                crate::app::connect::llama_lifecycle::MemoryMode::Active => "active (LLM-driven per-turn query proposal)",
+                crate::app::connect::llama_lifecycle::MemoryMode::Active => {
+                    "active (LLM-driven per-turn query proposal)"
+                }
             };
             info(app, format!("memory mode: {label}"));
         }
         "restate" => {
             let slug = args.get(2).copied().unwrap_or("").trim();
             if slug.is_empty() {
-                info(app, "usage: /memory restate <slug>\n(LLM rescans recent chat history and rewrites the state fact's answer)");
+                info(
+                    app,
+                    "usage: /memory restate <slug>\n(LLM rescans recent chat history and rewrites the state fact's answer)",
+                );
                 return true;
             }
             if !matches!(app.provider, crate::Provider::Llamacpp) {
@@ -238,7 +248,10 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
         "observe" => {
             let query = raw.splitn(3, char::is_whitespace).nth(2).unwrap_or("").trim();
             if query.is_empty() {
-                info(app, "usage: /memory observe <behavioral query>\n(LLM scans past user messages, summarizes the user's pattern matching the query)");
+                info(
+                    app,
+                    "usage: /memory observe <behavioral query>\n(LLM scans past user messages, summarizes the user's pattern matching the query)",
+                );
                 return true;
             }
             if !matches!(app.provider, crate::Provider::Llamacpp) {
@@ -269,11 +282,7 @@ fn collect_recent_user_messages(app: &App, max: usize) -> Vec<String> {
                     parts.push(t.text.clone());
                 }
             }
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join("\n"))
-            }
+            if parts.is_empty() { None } else { Some(parts.join("\n")) }
         })
         .take(max)
         .collect::<Vec<_>>()
@@ -356,15 +365,11 @@ fn spawn_memory_observe(app: &mut App, behavior_query: String) {
         info(app, "memory observe: no recent user messages to observe");
         return;
     }
-    info(
-        app,
-        format!("memory: observing behavioral pattern for `{behavior_query}`... (~3-5s)"),
-    );
+    info(app, format!("memory: observing behavioral pattern for `{behavior_query}`... (~3-5s)"));
     let url = app.llama_url.clone();
     let event_tx = app.event_tx.clone();
     let rt_tx = app.llama_runtime_tx.clone();
-    let active_skill_clone =
-        app.managed_llama_server.borrow().as_ref().map(|_| String::new()); // placeholder
+    let active_skill_clone = app.managed_llama_server.borrow().as_ref().map(|_| String::new()); // placeholder
 
     // Behavioral facts are scoped per active skill. We don't have a direct
     // accessor on App here, so default to "default" scope for v0.1.
@@ -378,12 +383,9 @@ fn spawn_memory_observe(app: &mut App, behavior_query: String) {
             temperature: Some(0.1),
             max_tokens: Some(200),
         };
-        let Some(pattern) = crate::memory_judge::observe_behavioral_pattern(
-            &config,
-            &behavior_query,
-            &recent,
-        )
-        .await
+        let Some(pattern) =
+            crate::memory_judge::observe_behavioral_pattern(&config, &behavior_query, &recent)
+                .await
         else {
             let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(format!(
                 "memory observe[{behavior_query}]: no clear pattern from recent messages"
@@ -430,15 +432,17 @@ fn slugify_query(s: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.is_empty() {
-        "observation".to_owned()
-    } else {
-        out.chars().take(40).collect()
-    }
+    if out.is_empty() { "observation".to_owned() } else { out.chars().take(40).collect() }
 }
 
 fn spawn_memory_query(app: &mut App, scene: String) {
-    info(app, format!("memory: proposing queries for scene `{}` ...", scene.chars().take(60).collect::<String>()));
+    info(
+        app,
+        format!(
+            "memory: proposing queries for scene `{}` ...",
+            scene.chars().take(60).collect::<String>()
+        ),
+    );
     let url = app.llama_url.clone();
     let event_tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
@@ -646,7 +650,10 @@ fn handle_provider_submit(app: &mut App, args: &[&str]) -> bool {
                 return true;
             };
             if !matches!(app.provider, crate::Provider::Llamacpp) {
-                warn(app, "current provider is not llamacpp — restart with `mochi --provider llamacpp` first");
+                warn(
+                    app,
+                    "current provider is not llamacpp — restart with `mochi --provider llamacpp` first",
+                );
                 return true;
             }
             let model_path = std::path::PathBuf::from(path_str);
@@ -657,7 +664,10 @@ fn handle_provider_submit(app: &mut App, args: &[&str]) -> bool {
             spawn_managed_swap(app, model_path);
         }
         "anthropic" => {
-            warn(app, "switching to anthropic mid-session is not supported — restart with `mochi --provider anthropic`");
+            warn(
+                app,
+                "switching to anthropic mid-session is not supported — restart with `mochi --provider anthropic`",
+            );
         }
         _ => {
             info(app, "provider: subcommands are show | llamacpp <PATH> | anthropic");
@@ -686,7 +696,10 @@ fn spawn_managed_swap(app: &mut App, model_path: std::path::PathBuf) {
 
     tokio::task::spawn_local(async move {
         // Drop the old server FIRST so the port is freed before the new bind.
-        if let Some(old) = managed_slot.borrow_mut().take() {
+        // Take ownership BEFORE awaiting so the RefCell borrow doesn't span the await
+        // point (clippy::await_holding_refcell_ref + real correctness hazard).
+        let old_server = managed_slot.borrow_mut().take();
+        if let Some(old) = old_server {
             let _ = old.shutdown().await;
         }
 
@@ -704,9 +717,9 @@ fn spawn_managed_swap(app: &mut App, model_path: std::path::PathBuf) {
         };
 
         if let Err(e) = server.wait_for_ready(Some(std::time::Duration::from_secs(120))).await {
-            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
-                format!("provider swap: server not ready: {e}"),
-            ));
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(format!(
+                "provider swap: server not ready: {e}"
+            )));
             return;
         }
 
@@ -714,14 +727,12 @@ fn spawn_managed_swap(app: &mut App, model_path: std::path::PathBuf) {
         *managed_slot.borrow_mut() = Some(server);
 
         if let Some(tx) = rt_tx.as_ref() {
-            let _ = tx.send(
-                crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::SetLlamaUrl(
+            let _ =
+                tx.send(crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::SetLlamaUrl(
                     new_url.clone(),
-                ),
-            );
-            let _ = tx.send(
-                crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
-            );
+                ));
+            let _ =
+                tx.send(crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem);
         }
 
         tracing::info!(
