@@ -9,29 +9,28 @@ pub struct CapturedFact {
     pub content: String,
 }
 
-const EXTRACTION_SYSTEM: &str = "You extract durable user facts from a chat message. \
+const EXTRACTION_SYSTEM: &str = "You extract DURABLE user facts from a chat message — facts that would still be true next week, in a separate conversation. \
 Output ONE fact per line in the exact format: `KIND|SLUG|VALUE`.\n\n\
 KIND ∈ {profile, concept, state, behavioral}:\n\
-- profile: user identity (name, age, role)\n\
-- concept: named entities about the user (city, language, project, employer)\n\
-- state: user's current task or focus\n\
-- behavioral: user preferences or communication patterns\n\n\
-SLUG: short kebab-case key like `name`, `location`, `prefers-terse`.\n\
-VALUE: the literal value or single-clause phrase. Be terse. NO sentences, NO meta-commentary.\n\n\
-GOOD examples:\n\
-- profile|name|Duc\n\
-- concept|location|Saigon, Vietnam\n\
-- concept|language|Vietnamese, English\n\
-- behavioral|tone|prefers terse 1-3 sentence replies\n\
-- state|focus|building a terminal AI pet in Rust\n\n\
-BAD (DO NOT emit anything like these — too verbose/meta):\n\
-- profile|name|Duc is a user who has shared their name\n\
-- behavioral|prefers-terse|The user prefers concise communication and avoids elaborate expressions\n\n\
-Rules:\n\
-- Only emit facts the user EXPLICITLY stated about themselves in THIS message.\n\
-- DO NOT extract facts about you (the assistant), other people, or speculation.\n\
-- If no durable user fact (greeting, joke, question, story), output NOTHING.\n\
-- No prose, no JSON, no markdown — only fact lines, or nothing at all.";
+- profile: stable user identity (name, age, profession)\n\
+- concept: attributes ABOUT the user — their location, their languages, their employer, their hardware. NOT subjects/topics they merely brought up in chat.\n\
+- state: the user's persistent current project or focus. NOT the immediate conversation flow.\n\
+- behavioral: how the user prefers Mochi to communicate (length, tone, language mix)\n\n\
+SLUG: short kebab-case key. Reuse stable slugs across messages (`name`, `location`, `tone`) so the same attribute updates the same slot.\n\
+VALUE: terse literal value. No sentences, no meta-commentary, no third-person preamble.\n\n\
+The single test for every emitted fact:\n\
+> If the user opened a NEW Mochi session next month and never mentioned this again, would this fact still describe them?\n\n\
+If yes → emit. If no → do NOT emit.\n\n\
+Reject these categories outright:\n\
+- topics, media, entities the user merely asked or talked about\n\
+- one-shot interests, single-mention preferences without strong commitment language\n\
+- meta-observations about how the user phrases or formats messages\n\
+- describes the current conversation flow rather than the user themselves\n\
+- anything the assistant said or did\n\n\
+Hard rules:\n\
+- Small-talk / greeting / question / request → output NOTHING.\n\
+- When unsure → output NOTHING. False negatives are cheaper than memory bloat.\n\
+- No prose. No JSON. No markdown. Only fact lines, or nothing.";
 
 const EXTRACTION_TEMPERATURE: f32 = 0.0;
 const EXTRACTION_MAX_TOKENS: u32 = 256;

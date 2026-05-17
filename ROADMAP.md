@@ -52,17 +52,32 @@ Decision points still open:
 
 ---
 
-## Sprint 7 — Pet, but make it pixel
+## Sprint 7 — Pet & managed llama-server lifecycle
 
-Goal: pixel-art animated pet sits in TUI corner, reacts to state. Closer to the original Petdex-style vision.
+### Sprint 7a — ASCII pet in TUI corner (shipped)
 
-- [ ] Add `viuer` + `image` crate (already in deps) sprite renderer module `src/ui/pet_render.rs`
-- [ ] Bundle 16×16 (or 32×32) pixel-art pets — either draw custom or use a CC0 sprite pack from itch.io. Audit Petdex license before reuse.
-- [ ] Layout: carve `pet_corner: Rect` from `src/ui/layout.rs` (bottom-right, ~6×4 chars).
-- [ ] Wire `PetMood` → frame selection. Use existing 16ms TUI tick for animation.
-- [ ] Thread `--pet NAME` from CLI down into `WelcomeBlock` so welcome banner matches.
-- [ ] ASCII fallback when terminal lacks kitty/iTerm2/sixel graphics protocol.
-- [ ] `/pet pick NAME` to switch live without restart.
+- [x] `App.pet_character` + `App.pet_mood` state, populated from `--pet` flag
+- [x] `src/ui/pet_overlay.rs` — bordered box top-right of body, 18×5 cells, ASCII sprite + `name • mood` label
+- [x] Mood transitions: Thinking on prompt submit, Happy on TurnComplete, Sad on TurnError/TurnCancelled
+- [x] No layout-test regressions (overlay drawn after chat, body Rect unchanged)
+
+### Sprint 7b — Managed llama-server lifecycle (shipped)
+
+- [x] `src/llama_server.rs::ManagedLlamaServer` — spawn `llama-server` child with `kill_on_drop` + explicit shutdown
+- [x] `wait_for_ready` polls `/v1/models` (not `/health`) — only returns when model weights are actually queryable
+- [x] `--llama-model PATH` flag spawns managed child at startup
+- [x] `/provider` slash command: `show` / `llamacpp <PATH>` / `anthropic` (reject with restart hint)
+- [x] `/provider llamacpp PATH` mid-session swap: drop old (port freed) → spawn new → wait ready → `LlamaRuntimeCommand::SetLlamaUrl` → `RebuildSystem`
+- [x] Retry-on-503 in `llama_client` (8× × 2s grace) so prompts during model load don't crash to permanent TurnError
+
+### Sprint 7c — Pixel pet via viuer (deferred)
+
+- [ ] Add `viuer` sprite renderer (`src/ui/pet_render.rs`) — bundle 16×16 CC0 pixel pets (audit Petdex first)
+- [ ] Detect kitty / iTerm2 / sixel graphics protocol; fall back to ASCII overlay otherwise
+- [ ] Animation frames driven by existing 16ms TUI tick
+- [ ] Banner-per-pet — thread `App.pet_character` into `WelcomeBlock` so `--pet bunny` shows a bunny in the welcome too
+- [ ] `/pet pick NAME` mid-session swap (currently only CLI flag)
+- [ ] Verify viuer escape sequences don't conflict with ratatui frame redraw (the tricky bit — may need post-frame cursor save/restore)
 
 ---
 

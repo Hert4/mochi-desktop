@@ -66,19 +66,28 @@ fn run() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
 
     rt.block_on(local_set.run_until(async move {
-        // Phase 1: create app in Connecting state (instant, no I/O)
-        let mut app = claude_code_rust::app::create_app(&cli);
+        let mut cli = cli;
+        let managed_server = maybe_spawn_managed_llama_server(&cli).await?;
+        if let Some(server) = managed_server.as_ref() {
+            cli.llama_url = server.url.clone();
+        }
 
-        // Phase 2: start non-session startup work + TUI.
-        // The bridge itself is started from the TUI loop only after trust is accepted.
-        // update check disabled in Mochi (was pointing to upstream claude-code-rust npm)
-        let _ = &cli;
+        let mut app = claude_code_rust::app::create_app(&cli);
+        if let Some(server) = managed_server {
+            *app.managed_llama_server.borrow_mut() = Some(server);
+        }
+
         claude_code_rust::app::start_service_status_check(&app);
         let result = claude_code_rust::app::run_tui(&mut app).await;
         maybe_print_resume_hint(&app, result.is_ok());
 
-        // Kill any spawned terminal child processes before exiting
         claude_code_rust::agent::events::kill_all_terminals(&app.terminals);
+
+        // Explicit graceful shutdown of managed llama-server (in addition to
+        // the Drop kill that fires when the Rc drops — belt and braces).
+        if let Some(server) = app.managed_llama_server.borrow_mut().take() {
+            let _ = server.shutdown().await;
+        }
 
         if let Some(app_error) = app.exit_error.take() {
             return Err(anyhow::Error::new(app_error));
@@ -86,6 +95,25 @@ fn run() -> anyhow::Result<()> {
 
         result
     }))
+}
+
+async fn maybe_spawn_managed_llama_server(
+    cli: &Cli,
+) -> anyhow::Result<Option<claude_code_rust::llama_server::ManagedLlamaServer>> {
+    if cli.provider != claude_code_rust::Provider::Llamacpp {
+        return Ok(None);
+    }
+    let Some(model_path) = cli.llama_model.as_ref() else {
+        return Ok(None);
+    };
+    eprintln!("[mochi] starting managed llama-server with {} ...", model_path.display());
+    let mut config = claude_code_rust::llama_server::LlamaServerConfig::new(model_path.clone());
+    config.context_size = cli.llama_context;
+    let server = claude_code_rust::llama_server::ManagedLlamaServer::spawn(&config)?;
+    eprintln!("[mochi] waiting for {} to load the model...", server.url);
+    server.wait_for_ready(None).await?;
+    eprintln!("[mochi] llama-server ready at {}", server.url);
+    Ok(Some(server))
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

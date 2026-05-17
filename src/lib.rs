@@ -5,9 +5,12 @@ pub mod agent;
 pub mod app;
 pub mod chat_repl;
 pub mod error;
+pub mod llama_server;
 pub mod logging;
 pub mod memory;
 pub mod memory_capture;
+pub mod memory_judge;
+pub mod memory_query;
 pub mod perf;
 pub mod pet;
 pub mod skills;
@@ -91,6 +94,17 @@ pub struct Cli {
     /// Sampling temperature for llama provider.
     #[arg(long, default_value_t = 0.7_f32)]
     pub llama_temperature: f32,
+
+    /// Path to a GGUF model. When set, Mochi spawns a managed `llama-server`
+    /// child process bound to its own lifecycle — the model is unloaded as
+    /// soon as Mochi exits. Skip this flag to point at an externally-managed
+    /// llama-server via `--llama-url`.
+    #[arg(long, value_name = "PATH")]
+    pub llama_model: Option<std::path::PathBuf>,
+
+    /// Context size for managed llama-server (only used with --llama-model).
+    #[arg(long, default_value_t = 32_768)]
+    pub llama_context: u32,
 
     /// Pick which pet character to display (mochi=cat, bunny, frog, robot, dragon).
     #[arg(long, default_value = "mochi")]

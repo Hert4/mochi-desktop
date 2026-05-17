@@ -10,6 +10,7 @@ use crate::agent::types;
 use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
 use crate::memory::{self, MemoryStore, render_memory_section};
 use crate::memory_capture;
+use crate::memory_judge::{self, JudgeOutcome};
 use crate::skills::{self, Skill};
 use crate::tools;
 use futures::StreamExt as _;
@@ -23,6 +24,19 @@ use tokio::sync::mpsc;
 pub enum LlamaRuntimeCommand {
     RebuildSystem,
     SetActiveSkill(Option<String>),
+    /// Switch the underlying llama-server URL (used when `/provider` swaps the
+    /// managed model). Future requests go to the new endpoint.
+    SetLlamaUrl(String),
+    /// Switch memory injection strategy. `All` = dump every fact into the
+    /// system prompt at session start (current behavior). `Active` = run a
+    /// per-turn query proposal + match, inject only relevant facts.
+    SetMemoryMode(MemoryMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    All,
+    Active,
 }
 
 use super::ConnectionSlot;
@@ -71,7 +85,7 @@ pub(super) async fn run_llama_task(
         },
     );
 
-    let config = LlamaConfig {
+    let mut config = LlamaConfig {
         url: params.llama_url.clone(),
         model: None,
         temperature: Some(params.llama_temperature),
@@ -82,6 +96,7 @@ pub(super) async fn run_llama_task(
         "You are Mochi, a cute terminal pet companion. Reply concisely (1-3 sentences) and stay in character.".to_owned();
     let mut active_skill: Option<String> = None;
     let mut skills_cache: BTreeMap<String, Skill> = load_skills_cache();
+    let mut memory_mode: MemoryMode = MemoryMode::All;
 
     let mut history: Vec<Message> = vec![Message::system(build_system_prompt(
         &base_system,
@@ -97,9 +112,26 @@ pub(super) async fn run_llama_task(
                     BridgeCommand::Prompt { session_id: prompt_session, chunks } => {
                         let user_text = extract_user_text(&chunks);
                         if !user_text.is_empty() {
+                            // When memory_mode is Active, rebuild history[0] with only
+                            // the facts the LLM thinks are relevant to this turn.
+                            // Falls back to the cached full-dump system prompt on any
+                            // failure so we never block a prompt waiting on memory.
+                            if memory_mode == MemoryMode::Active {
+                                let new_system = build_active_system_prompt(
+                                    &config,
+                                    &base_system,
+                                    active_skill.as_deref(),
+                                    &skills_cache,
+                                    &user_text,
+                                )
+                                .await;
+                                if let Some(first) = history.first_mut() {
+                                    first.content = new_system;
+                                }
+                            }
                             spawn_background_capture(
                                 config.clone(),
-                                user_text,
+                                user_text.clone(),
                                 active_skill.clone(),
                                 rt_tx.clone(),
                             );
@@ -155,11 +187,40 @@ pub(super) async fn run_llama_task(
                             );
                         }
                     }
+                    LlamaRuntimeCommand::SetLlamaUrl(new_url) => {
+                        tracing::info!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "llama_url_switched",
+                            old_url = %config.url,
+                            new_url = %new_url,
+                        );
+                        config.url = new_url;
+                    }
+                    LlamaRuntimeCommand::SetMemoryMode(new_mode) => {
+                        tracing::info!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "memory_mode_switched",
+                            mode = ?new_mode,
+                        );
+                        memory_mode = new_mode;
+                    }
                 }
             }
             else => break,
         }
     }
+}
+
+fn fallback_slug_scope(
+    fact: &crate::memory_capture::CapturedFact,
+    behavioral_scope: &str,
+) -> (String, Option<String>) {
+    let scope = if fact.kind == memory::FactKind::Behavioral {
+        Some(behavioral_scope.to_owned())
+    } else {
+        None
+    };
+    (fact.slug.clone(), scope)
 }
 
 fn load_skills_cache() -> BTreeMap<String, Skill> {
@@ -190,12 +251,26 @@ fn spawn_background_capture(
         let Ok(store) = MemoryStore::open(&path) else { return };
         let behavioral_scope = active_skill.as_deref().unwrap_or("default");
         for fact in &facts {
-            let scope = if fact.kind == memory::FactKind::Behavioral {
-                Some(behavioral_scope)
-            } else {
-                None
+            // BOOKMARKS-style judge: against existing same-kind facts, decide
+            // reuse/derive/new. On reuse, overwrite the matched fact's content
+            // by upserting under its existing slug. Otherwise insert fresh.
+            let existing = store.list(Some(fact.kind)).unwrap_or_default();
+            let existing_refs: Vec<&memory::Fact> = existing.iter().collect();
+            let outcome = memory_judge::judge_capture(&config, fact, &existing_refs).await;
+
+            let (target_slug, target_scope) = match outcome {
+                JudgeOutcome::Reuse { existing_id } => {
+                    let matched = existing.iter().find(|f| f.id == existing_id);
+                    match matched {
+                        Some(m) => (m.slug.clone(), m.skill_scope.clone()),
+                        None => fallback_slug_scope(fact, behavioral_scope),
+                    }
+                }
+                JudgeOutcome::Derive { .. } | JudgeOutcome::New => {
+                    fallback_slug_scope(fact, behavioral_scope)
+                }
             };
-            let _ = store.upsert(fact.kind, &fact.slug, &fact.content, scope);
+            let _ = store.upsert(fact.kind, &target_slug, &fact.content, target_scope.as_deref());
         }
         tracing::info!(
             target: crate::logging::targets::APP_SESSION,
@@ -623,6 +698,60 @@ fn build_system_prompt(
             if !section.is_empty() {
                 out.push_str(&section);
             }
+        }
+    }
+    out.push_str(base);
+    if let Some(name) = active_skill {
+        if let Some(skill) = skills_map.get(name) {
+            out.push_str(&format!("\n\n[Active skill: {name}]\n{}\n", skill.body));
+        }
+    }
+    out
+}
+
+/// Active-mode system prompt: call the BOOKMARKS-style query proposer,
+/// match the proposed queries against the store, and render ONLY the
+/// matched facts (plus profile, which is always relevant). Falls back to
+/// the all-facts builder if the memory store or LLM call fails.
+async fn build_active_system_prompt(
+    config: &LlamaConfig,
+    base: &str,
+    active_skill: Option<&str>,
+    skills_map: &BTreeMap<String, Skill>,
+    user_text: &str,
+) -> String {
+    let Some(path) = memory::default_db_path() else {
+        return build_system_prompt(base, active_skill, skills_map);
+    };
+    let Ok(store) = MemoryStore::open(&path) else {
+        return build_system_prompt(base, active_skill, skills_map);
+    };
+
+    let (queries, mut facts) =
+        crate::memory_query::fetch_relevant_facts(config, user_text, &store, active_skill).await;
+
+    // Profile is small and almost always useful; always include it even if
+    // the proposer didn't ask for it explicitly.
+    if let Ok(profile_facts) = store.list(Some(memory::FactKind::Profile)) {
+        for p in profile_facts {
+            if !facts.iter().any(|f| f.id == p.id) {
+                facts.push(p);
+            }
+        }
+    }
+
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "memory_active_injected",
+        queries = queries.len(),
+        facts = facts.len(),
+    );
+
+    let mut out = String::new();
+    if !facts.is_empty() {
+        let section = render_memory_section(&facts, active_skill);
+        if !section.is_empty() {
+            out.push_str(&section);
         }
     }
     out.push_str(base);

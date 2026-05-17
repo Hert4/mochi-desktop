@@ -207,6 +207,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/skill".into(), "List or inspect installed Mochi skills".into());
     by_name.insert("/pet".into(), "List or show Mochi pet characters".into());
     by_name.insert("/clear".into(), "Clear the chat view (keeps memory and active skill)".into());
+    by_name.insert("/provider".into(), "Show current LLM provider or swap llama.cpp model".into());
 
     for cmd in &app.available_commands {
         let name = normalize_slash_name(&cmd.name);
@@ -459,5 +460,6 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/skill"
             | "/pet"
             | "/clear"
+            | "/provider"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }

@@ -50,6 +50,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/skill" => handle_skill_submit(app, &parsed.args),
         "/pet" => handle_pet_submit(app, &parsed.args),
         "/clear" => handle_clear_submit(app),
+        "/provider" => handle_provider_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
 }
@@ -184,14 +185,360 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
                 }
             }
         }
+        "consolidate" => {
+            if !matches!(app.provider, crate::Provider::Llamacpp) {
+                warn(app, "memory consolidate requires llamacpp provider");
+                return true;
+            }
+            spawn_memory_consolidate(app);
+        }
+        "query" => {
+            let scene = raw.splitn(3, char::is_whitespace).nth(2).unwrap_or("").trim();
+            if scene.is_empty() {
+                info(app, "usage: /memory query <text>\n(LLM proposes search queries against memory and returns matched facts)");
+                return true;
+            }
+            if !matches!(app.provider, crate::Provider::Llamacpp) {
+                warn(app, "memory query requires llamacpp provider");
+                return true;
+            }
+            spawn_memory_query(app, scene.to_owned());
+        }
+        "mode" => {
+            let mode_arg = args.get(2).copied().unwrap_or("").to_lowercase();
+            let mode = match mode_arg.as_str() {
+                "active" => crate::app::connect::llama_lifecycle::MemoryMode::Active,
+                "all" | "" => crate::app::connect::llama_lifecycle::MemoryMode::All,
+                _ => {
+                    info(app, "usage: /memory mode active|all");
+                    return true;
+                }
+            };
+            if let Some(tx) = app.llama_runtime_tx.as_ref() {
+                let _ = tx.send(crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::SetMemoryMode(mode));
+            }
+            let label = match mode {
+                crate::app::connect::llama_lifecycle::MemoryMode::All => "all (inject every fact)",
+                crate::app::connect::llama_lifecycle::MemoryMode::Active => "active (LLM-driven per-turn query proposal)",
+            };
+            info(app, format!("memory mode: {label}"));
+        }
+        "restate" => {
+            let slug = args.get(2).copied().unwrap_or("").trim();
+            if slug.is_empty() {
+                info(app, "usage: /memory restate <slug>\n(LLM rescans recent chat history and rewrites the state fact's answer)");
+                return true;
+            }
+            if !matches!(app.provider, crate::Provider::Llamacpp) {
+                warn(app, "memory restate requires llamacpp provider");
+                return true;
+            }
+            spawn_memory_restate(app, slug.to_owned());
+        }
+        "observe" => {
+            let query = raw.splitn(3, char::is_whitespace).nth(2).unwrap_or("").trim();
+            if query.is_empty() {
+                info(app, "usage: /memory observe <behavioral query>\n(LLM scans past user messages, summarizes the user's pattern matching the query)");
+                return true;
+            }
+            if !matches!(app.provider, crate::Provider::Llamacpp) {
+                warn(app, "memory observe requires llamacpp provider");
+                return true;
+            }
+            spawn_memory_observe(app, query.to_owned());
+        }
         _ => {
             info(
                 app,
-                "memory: subcommands are list | remember KIND SLUG CONTENT | forget SLUG | profile [TEXT]",
+                "memory: subcommands are list | remember KIND SLUG CONTENT | forget SLUG | profile [TEXT] | consolidate | query <text> | mode active|all | restate <slug> | observe <behavioral query>",
             );
         }
     }
     true
+}
+
+fn collect_recent_user_messages(app: &App, max: usize) -> Vec<String> {
+    app.messages
+        .iter()
+        .rev()
+        .filter(|m| matches!(m.role, crate::app::MessageRole::User))
+        .filter_map(|m| {
+            let mut parts: Vec<String> = Vec::new();
+            for block in &m.blocks {
+                if let crate::app::MessageBlock::Text(t) = block {
+                    parts.push(t.text.clone());
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        })
+        .take(max)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn spawn_memory_restate(app: &mut App, slug: String) {
+    let recent = collect_recent_user_messages(app, 20);
+    if recent.is_empty() {
+        info(app, "memory restate: no recent user messages to base the update on");
+        return;
+    }
+    info(app, format!("memory: restating state[{slug}] from recent chat history... (~3-5s)"));
+    let url = app.llama_url.clone();
+    let event_tx = app.event_tx.clone();
+    let rt_tx = app.llama_runtime_tx.clone();
+    tokio::task::spawn_local(async move {
+        let Some(path) = crate::memory::default_db_path() else { return };
+        let Ok(store) = crate::memory::MemoryStore::open(&path) else { return };
+        let existing = match store.list(Some(crate::memory::FactKind::State)) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let Some(state_fact) = existing.iter().find(|f| f.slug == slug) else {
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(format!(
+                "memory restate: no state fact named `{slug}` (use /memory list state)"
+            )));
+            return;
+        };
+        let config = crate::agent::llama_client::LlamaConfig {
+            url,
+            model: None,
+            temperature: Some(0.1),
+            max_tokens: Some(200),
+        };
+        let Some(new_answer) = crate::memory_judge::restate_from_history(
+            &config,
+            &state_fact.slug,
+            &state_fact.content,
+            &recent,
+        )
+        .await
+        else {
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                "memory restate: llama returned empty answer".to_owned(),
+            ));
+            return;
+        };
+        if new_answer == state_fact.content {
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(format!(
+                "memory restate[{slug}]: no change ({new_answer})"
+            )));
+            return;
+        }
+        match store.upsert(crate::memory::FactKind::State, &slug, &new_answer, None) {
+            Ok(_) => {
+                if let Some(tx) = rt_tx.as_ref() {
+                    let _ = tx.send(
+                        crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
+                    );
+                }
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    format!("memory restate[{slug}]: {new_answer}"),
+                ));
+            }
+            Err(err) => {
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    format!("memory restate: store write failed: {err}"),
+                ));
+            }
+        }
+    });
+}
+
+fn spawn_memory_observe(app: &mut App, behavior_query: String) {
+    let recent = collect_recent_user_messages(app, 20);
+    if recent.is_empty() {
+        info(app, "memory observe: no recent user messages to observe");
+        return;
+    }
+    info(
+        app,
+        format!("memory: observing behavioral pattern for `{behavior_query}`... (~3-5s)"),
+    );
+    let url = app.llama_url.clone();
+    let event_tx = app.event_tx.clone();
+    let rt_tx = app.llama_runtime_tx.clone();
+    let active_skill_clone =
+        app.managed_llama_server.borrow().as_ref().map(|_| String::new()); // placeholder
+
+    // Behavioral facts are scoped per active skill. We don't have a direct
+    // accessor on App here, so default to "default" scope for v0.1.
+    let _ = active_skill_clone;
+    let scope = "default".to_owned();
+
+    tokio::task::spawn_local(async move {
+        let config = crate::agent::llama_client::LlamaConfig {
+            url,
+            model: None,
+            temperature: Some(0.1),
+            max_tokens: Some(200),
+        };
+        let Some(pattern) = crate::memory_judge::observe_behavioral_pattern(
+            &config,
+            &behavior_query,
+            &recent,
+        )
+        .await
+        else {
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(format!(
+                "memory observe[{behavior_query}]: no clear pattern from recent messages"
+            )));
+            return;
+        };
+        let slug = slugify_query(&behavior_query);
+        let Some(path) = crate::memory::default_db_path() else { return };
+        let Ok(store) = crate::memory::MemoryStore::open(&path) else { return };
+        match store.upsert(crate::memory::FactKind::Behavioral, &slug, &pattern, Some(&scope)) {
+            Ok(_) => {
+                if let Some(tx) = rt_tx.as_ref() {
+                    let _ = tx.send(
+                        crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
+                    );
+                }
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    format!("memory observe[{slug}]: {pattern}"),
+                ));
+            }
+            Err(err) => {
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    format!("memory observe: store write failed: {err}"),
+                ));
+            }
+        }
+    });
+}
+
+fn slugify_query(s: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = true;
+    for ch in s.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+            if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "observation".to_owned()
+    } else {
+        out.chars().take(40).collect()
+    }
+}
+
+fn spawn_memory_query(app: &mut App, scene: String) {
+    info(app, format!("memory: proposing queries for scene `{}` ...", scene.chars().take(60).collect::<String>()));
+    let url = app.llama_url.clone();
+    let event_tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        let Some(path) = crate::memory::default_db_path() else { return };
+        let Ok(store) = crate::memory::MemoryStore::open(&path) else { return };
+        let config = crate::agent::llama_client::LlamaConfig {
+            url,
+            model: None,
+            temperature: Some(0.0),
+            max_tokens: Some(200),
+        };
+        let (queries, facts) =
+            crate::memory_query::fetch_relevant_facts(&config, &scene, &store, None).await;
+
+        let mut out = String::from("memory query proposal:\n");
+        if queries.is_empty() {
+            out.push_str("  (LLM proposed no queries — scene may need no memory context)\n");
+        } else {
+            for q in &queries {
+                out.push_str(&format!("  {} | {}\n", q.tag.as_str(), q.query));
+            }
+        }
+        out.push_str("\nmatched facts:\n");
+        if facts.is_empty() {
+            out.push_str("  (no facts matched)\n");
+        } else {
+            for f in &facts {
+                let scope = f.skill_scope.as_deref().unwrap_or("-");
+                out.push_str(&format!(
+                    "  [{:<10}] {} (scope={})  {}\n",
+                    f.kind.as_str(),
+                    f.slug,
+                    scope,
+                    f.content
+                ));
+            }
+        }
+        // Reuse SlashCommandError as a notification channel — pushes a system
+        // message visible to the user. Severity styling is acceptable cost
+        // until we add a dedicated Info-severity wire event.
+        let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(out));
+    });
+}
+
+fn spawn_memory_consolidate(app: &mut App) {
+    info(
+        app,
+        "memory: consolidating into narrative profile via local llama... (this may take ~10s)",
+    );
+    let url = app.llama_url.clone();
+    let temperature = 0.2_f32;
+    let event_tx = app.event_tx.clone();
+    let rt_tx = app.llama_runtime_tx.clone();
+    tokio::task::spawn_local(async move {
+        let Some(path) = crate::memory::default_db_path() else { return };
+        let Ok(store) = crate::memory::MemoryStore::open(&path) else { return };
+        let facts = match store.list(None) {
+            Ok(v) if !v.is_empty() => v,
+            _ => {
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    "memory consolidate: no facts to consolidate".to_owned(),
+                ));
+                return;
+            }
+        };
+        let config = crate::agent::llama_client::LlamaConfig {
+            url,
+            model: None,
+            temperature: Some(temperature),
+            max_tokens: Some(400),
+        };
+        let Some(narrative) = crate::memory_judge::consolidate_profile(&config, &facts).await
+        else {
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                "memory consolidate: llama returned empty profile".to_owned(),
+            ));
+            return;
+        };
+        match store.upsert(crate::memory::FactKind::Profile, "user", &narrative, None) {
+            Ok(_) => {
+                if let Some(tx) = rt_tx.as_ref() {
+                    let _ = tx.send(
+                        crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
+                    );
+                }
+                tracing::info!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "memory_profile_consolidated",
+                    bytes = narrative.len(),
+                    "profile consolidated from {} facts",
+                    facts.len(),
+                );
+            }
+            Err(err) => {
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    format!("memory consolidate: store write failed: {err}"),
+                ));
+            }
+        }
+    });
 }
 
 fn handle_skill_submit(app: &mut App, args: &[&str]) -> bool {
@@ -264,6 +611,133 @@ fn handle_skill_submit(app: &mut App, args: &[&str]) -> bool {
         }
     }
     true
+}
+
+fn handle_provider_submit(app: &mut App, args: &[&str]) -> bool {
+    let sub = args.first().copied().unwrap_or("show");
+    match sub {
+        "show" | "" => {
+            let provider = match app.provider {
+                crate::Provider::Anthropic => "anthropic",
+                crate::Provider::Llamacpp => "llamacpp",
+            };
+            let mut out = format!("provider: {provider}\nllama_url: {}\n", app.llama_url);
+            let managed_path = app
+                .managed_llama_server
+                .borrow()
+                .as_ref()
+                .map(|s| s.model_path.display().to_string());
+            if let Some(path) = managed_path {
+                out.push_str(&format!("managed model: {path}\n"));
+            } else if matches!(app.provider, crate::Provider::Llamacpp) {
+                out.push_str("no managed llama-server is running.\n");
+                out.push_str("\n");
+                out.push_str("To start one inline:\n");
+                out.push_str("  /provider llamacpp <PATH-TO-GGUF>\n");
+                out.push_str("\n");
+                out.push_str("e.g. /provider llamacpp ~/gguf/qwen3-7b.Q5_K_M.gguf\n");
+                out.push_str("(model load takes 10-30s; child process dies when Mochi exits)\n");
+            }
+            info(app, out);
+        }
+        "llamacpp" => {
+            let Some(&path_str) = args.get(1) else {
+                info(app, "usage: /provider llamacpp <PATH-TO-GGUF>");
+                return true;
+            };
+            if !matches!(app.provider, crate::Provider::Llamacpp) {
+                warn(app, "current provider is not llamacpp — restart with `mochi --provider llamacpp` first");
+                return true;
+            }
+            let model_path = std::path::PathBuf::from(path_str);
+            if !model_path.is_file() {
+                warn(app, format!("model not found at {}", model_path.display()));
+                return true;
+            }
+            spawn_managed_swap(app, model_path);
+        }
+        "anthropic" => {
+            warn(app, "switching to anthropic mid-session is not supported — restart with `mochi --provider anthropic`");
+        }
+        _ => {
+            info(app, "provider: subcommands are show | llamacpp <PATH> | anthropic");
+        }
+    }
+    true
+}
+
+fn spawn_managed_swap(app: &mut App, model_path: std::path::PathBuf) {
+    info(
+        app,
+        format!(
+            "switching to llamacpp model {} ... (model load may take 10-30s)",
+            model_path.display()
+        ),
+    );
+
+    let managed_slot = std::rc::Rc::clone(&app.managed_llama_server);
+    let event_tx = app.event_tx.clone();
+    let rt_tx = app.llama_runtime_tx.clone();
+    let port = app
+        .managed_llama_server
+        .borrow()
+        .as_ref()
+        .map_or(8765_u16, |s| extract_port(&s.url).unwrap_or(8765));
+
+    tokio::task::spawn_local(async move {
+        // Drop the old server FIRST so the port is freed before the new bind.
+        if let Some(old) = managed_slot.borrow_mut().take() {
+            let _ = old.shutdown().await;
+        }
+
+        let mut cfg = crate::llama_server::LlamaServerConfig::new(model_path.clone());
+        cfg.port = port;
+
+        let server = match crate::llama_server::ManagedLlamaServer::spawn(&cfg) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                    format!("provider swap: spawn failed: {e}"),
+                ));
+                return;
+            }
+        };
+
+        if let Err(e) = server.wait_for_ready(Some(std::time::Duration::from_secs(120))).await {
+            let _ = event_tx.send(crate::agent::events::ClientEvent::SlashCommandError(
+                format!("provider swap: server not ready: {e}"),
+            ));
+            return;
+        }
+
+        let new_url = server.url.clone();
+        *managed_slot.borrow_mut() = Some(server);
+
+        if let Some(tx) = rt_tx.as_ref() {
+            let _ = tx.send(
+                crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::SetLlamaUrl(
+                    new_url.clone(),
+                ),
+            );
+            let _ = tx.send(
+                crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
+            );
+        }
+
+        tracing::info!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "provider_swap_completed",
+            url = %new_url,
+            model = %model_path.display(),
+            "provider swap completed",
+        );
+    });
+}
+
+fn extract_port(url: &str) -> Option<u16> {
+    let after_scheme = url.split("://").nth(1)?;
+    let host_port = after_scheme.split('/').next()?;
+    host_port.rsplit(':').next()?.parse().ok()
 }
 
 fn handle_clear_submit(app: &mut App) -> bool {

@@ -14,6 +14,7 @@ mod input;
 mod layout;
 mod markdown;
 mod message;
+mod pet_overlay;
 mod session_picker;
 pub mod theme;
 mod todo;

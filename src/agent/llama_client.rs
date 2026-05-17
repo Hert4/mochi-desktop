@@ -207,6 +207,52 @@ pub async fn stream_chat_with_tools(
     stream_chat_inner(config, messages, Some(tools)).await
 }
 
+/// llama-server returns 503 with body `"Loading model"` while a freshly-spawned
+/// child finishes loading weights. Retry a few times with backoff so a prompt
+/// fired right after `/provider llamacpp PATH` doesn't drop into a permanent
+/// TurnError state.
+async fn post_with_retries_on_loading(
+    client: &reqwest::Client,
+    url: &str,
+    body: &str,
+) -> anyhow::Result<reqwest::Response> {
+    const MAX_RETRIES: u8 = 8;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let request =
+            client.post(url).header("content-type", "application/json").body(body.to_owned());
+        match request.send().await {
+            Ok(resp) => {
+                if resp.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    return Ok(resp);
+                }
+                let body_text = resp.text().await.unwrap_or_default();
+                if !body_text.to_lowercase().contains("loading") {
+                    return Err(anyhow::anyhow!("llama returned 503: {body_text}"));
+                }
+                last_err = Some(anyhow::anyhow!("model still loading"));
+                if attempt < MAX_RETRIES {
+                    tracing::info!(
+                        target: crate::logging::targets::APP_NETWORK,
+                        event_name = "llama_loading_retry",
+                        attempt = attempt + 1,
+                        "llama-server still loading; retrying",
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+            Err(e) => {
+                last_err = Some(anyhow::anyhow!("llama request failed: {e}"));
+                if attempt < MAX_RETRIES {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("llama request: exhausted retries")))
+}
+
 async fn stream_chat_inner(
     config: &LlamaConfig,
     messages: &[Message],
@@ -234,13 +280,7 @@ async fn stream_chat_inner(
         "POST llama /v1/chat/completions"
     );
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .body(body_json)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("llama request failed: {e}"))?;
+    let resp = post_with_retries_on_loading(&client, &url, &body_json).await?;
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();

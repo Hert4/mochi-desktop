@@ -559,6 +559,8 @@ mod tests {
             provider: crate::Provider::Anthropic,
             llama_url: String::new(),
             llama_temperature: 0.0,
+            llama_model: None,
+            llama_context: 32_768,
             pet: "mochi".to_owned(),
         };
 
@@ -585,6 +587,8 @@ mod tests {
             provider: crate::Provider::Anthropic,
             llama_url: String::new(),
             llama_temperature: 0.0,
+            llama_model: None,
+            llama_context: 32_768,
             pet: "mochi".to_owned(),
         };
 
@@ -612,6 +616,8 @@ mod tests {
             provider: crate::Provider::Anthropic,
             llama_url: String::new(),
             llama_temperature: 0.0,
+            llama_model: None,
+            llama_context: 32_768,
             pet: "mochi".to_owned(),
         };
 
@@ -637,6 +643,8 @@ mod tests {
             provider: crate::Provider::Anthropic,
             llama_url: String::new(),
             llama_temperature: 0.0,
+            llama_model: None,
+            llama_context: 32_768,
             pet: "mochi".to_owned(),
         };
 
@@ -662,6 +670,8 @@ mod tests {
             provider: crate::Provider::Anthropic,
             llama_url: String::new(),
             llama_temperature: 0.0,
+            llama_model: None,
+            llama_context: 32_768,
             pet: "mochi".to_owned(),
         };
 

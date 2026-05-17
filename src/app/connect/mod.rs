@@ -259,6 +259,10 @@ pub fn create_app(cli: &Cli) -> App {
         llama_url: cli.llama_url.clone(),
         llama_temperature: cli.llama_temperature,
         llama_runtime_tx: None,
+        managed_llama_server: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        pet_character: crate::pet::PetCharacter::parse(&cli.pet)
+            .unwrap_or(crate::pet::PetCharacter::Mochi),
+        pet_mood: crate::pet::PetMood::Idle,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -373,6 +377,8 @@ mod tests {
             provider: crate::Provider::Anthropic,
             llama_url: String::new(),
             llama_temperature: 0.0,
+            llama_model: None,
+            llama_context: 32_768,
             pet: "mochi".to_owned(),
             command: None,
             no_update_check: true,

@@ -66,19 +66,26 @@ mochi chat
 
 ## Slash commands
 
-Inside the TUI (or `mochi chat`):
+Quick reference (full docs in [`USAGE.md`](./USAGE.md)):
 
 | Command | Purpose |
 |---------|---------|
 | `/help` | Show all commands |
+| `/provider [show \| llamacpp PATH]` | Inspect or swap LLM provider / managed model |
 | `/memory list [KIND]` | Show stored facts (profile, concept, state, behavioral) |
 | `/memory remember KIND SLUG CONTENT` | Manually add a fact |
 | `/memory forget SLUG` | Remove a fact |
 | `/memory profile [TEXT]` | View or set your one-line user bio |
-| `/skill list` | List installed skills |
-| `/skill use NAME` | Activate a skill mid-conversation (Mochi adopts its persona immediately) |
-| `/skill off` | Drop the active skill |
-| `/pet list` / `/pet show NAME` | Pet character roster |
+| `/memory consolidate` | LLM rewrites all facts into a narrative profile |
+| `/memory query <text>` | Debug: see which memory facts the LLM proposes for a scene |
+| `/memory mode active\|all` | Toggle per-turn query proposal vs full-dump injection |
+| `/memory restate <slug>` | LLM rescans recent chat to update a state fact |
+| `/memory observe <query>` | LLM summarizes a behavioral pattern from recent messages |
+| `/skill list \| use NAME \| off \| show NAME` | Skill management |
+| `/pet list \| show NAME` | Pet character roster |
+| `/clear` | Clear chat view (keeps memory + active skill) |
+
+For workflows, tool reference, skill authoring, memory model deep dive, and troubleshooting: see **[USAGE.md](./USAGE.md)**.
 
 ## Skills
 

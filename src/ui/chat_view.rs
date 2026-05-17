@@ -41,6 +41,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chat::render(frame, areas.body, app);
     }
 
+    super::pet_overlay::render(frame, areas.body, app);
+
     render_separator(frame, areas.input_sep);
 
     if areas.todo.height > 0 {

@@ -62,6 +62,7 @@ pub(super) fn submit_input(app: &mut App) {
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
     app.sync_help_open_with_input();
+    app.pet_mood = crate::pet::PetMood::Thinking;
     dispatch_submission(app, text);
 }
 

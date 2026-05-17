@@ -355,6 +355,13 @@ pub struct App {
     pub llama_temperature: f32,
     pub llama_runtime_tx:
         Option<mpsc::UnboundedSender<super::connect::llama_lifecycle::LlamaRuntimeCommand>>,
+    /// Slot for a Mochi-managed llama-server child process. Dropping the
+    /// inner `ManagedLlamaServer` kills the child, so a `replace()` here
+    /// atomically swaps models. None when running against an externally-managed
+    /// llama-server.
+    pub managed_llama_server: std::rc::Rc<std::cell::RefCell<Option<crate::llama_server::ManagedLlamaServer>>>,
+    pub pet_character: crate::pet::PetCharacter,
+    pub pet_mood: crate::pet::PetMood,
 }
 
 impl App {
@@ -938,6 +945,9 @@ impl App {
             llama_url: "http://127.0.0.1:8765".to_owned(),
             llama_temperature: 0.7,
             llama_runtime_tx: None,
+            managed_llama_server: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            pet_character: crate::pet::PetCharacter::Mochi,
+            pet_mood: crate::pet::PetMood::Idle,
         }
     }
 

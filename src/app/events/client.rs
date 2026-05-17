@@ -24,14 +24,20 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::McpElicitationCompleted { elicitation_id, server_name } => {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
         }
-        ClientEvent::TurnCancelled => turn::handle_turn_cancelled_event(app),
+        ClientEvent::TurnCancelled => {
+            app.pet_mood = crate::pet::PetMood::Sad;
+            turn::handle_turn_cancelled_event(app);
+        }
         ClientEvent::TurnComplete { terminal_reason } => {
+            app.pet_mood = crate::pet::PetMood::Happy;
             turn::handle_turn_complete_event(app, terminal_reason);
         }
         ClientEvent::TurnError { message, terminal_reason } => {
+            app.pet_mood = crate::pet::PetMood::Sad;
             turn::handle_turn_error_event(app, &message, None, terminal_reason);
         }
         ClientEvent::TurnErrorClassified { message, class, terminal_reason } => {
+            app.pet_mood = crate::pet::PetMood::Sad;
             turn::handle_turn_error_event(app, &message, Some(class), terminal_reason);
         }
         ClientEvent::Connected {
