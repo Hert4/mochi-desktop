@@ -23,25 +23,62 @@ use futures::StreamExt as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JudgeOutcome {
-    /// Same slot — overwrite the matched existing fact's content.
+    /// Same slot, same value (or paraphrase) — overwrite the matched existing
+    /// fact's content. Paper analogue: `KEEP` (STALE §F.2).
     Reuse { existing_id: i64 },
     /// Related but distinct — keep both, store new fact as a fresh slug.
     Derive { existing_id: i64 },
-    /// Unrelated — store as a brand-new fact.
+    /// Same attribute, **incompatible** new value — archive the old fact and
+    /// write the new value as a fresh active row. Paper analogue: `REPLACE`.
+    /// Restricted by the judge prompt to `profile` and `state` kinds; concept
+    /// and behavioral are stable categories and never trigger replace.
+    Replace { existing_id: i64 },
+    /// Unrelated — store as a brand-new fact. Paper analogue: `ADD`.
     New,
+}
+
+/// Outcome of asking whether a prior fact is still valid given a new
+/// observation. Used by belief propagation after a `Replace` fires on a
+/// profile/state fact. Mirrors STALE paper §F.2 stale-state adjudication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropagateOutcome {
+    /// The prior fact is still consistent with the new evidence.
+    Keep,
+    /// The prior fact has been invalidated by the new evidence — archive it.
+    /// Paper: `STALE`.
+    Stale,
+    /// The prior fact's default is no longer safe, but no replacement is
+    /// available yet — mark the slot as unresolved. Paper: `UNKNOWN_CURRENT`.
+    Unknown,
 }
 
 const JUDGE_TEMPERATURE: f32 = 0.0;
 const JUDGE_MAX_TOKENS: u32 = 16;
-const JUDGE_SYSTEM: &str = "Compare a newly captured user fact against an existing fact. Decide if they cover the SAME attribute of the user. \
-Output EXACTLY ONE lowercase word: `reuse`, `derive`, or `new`.\n\n\
-- `reuse`: both facts describe the SAME attribute even if slugs or wording differ. \
-  The new fact REPLACES the old. Use whenever the two are paraphrases / synonyms / restatements of the same user attribute.\n\
-- `derive`: same general theme but different facets. Keep BOTH (e.g. broader vs narrower scope, or related but distinct attributes within the same area).\n\
+const JUDGE_SYSTEM: &str = "Compare a newly captured user fact against an existing fact. Decide if they cover the SAME attribute of the user, and whether the new value REPLACES the old. \
+Output EXACTLY ONE lowercase word: `reuse`, `derive`, `replace`, or `new`.\n\n\
+- `reuse`: same attribute, same value (paraphrase, synonym, or restatement). \
+  The new fact updates the existing slot with no semantic change.\n\
+- `derive`: same general theme but distinct facets. Keep BOTH (broader vs narrower scope, or related but distinct attributes within the same area).\n\
+- `replace`: same attribute, **incompatible** new value — the new evidence clearly supersedes the old. \
+  Use ONLY when (a) the existing kind is `profile` or `state`, AND (b) the new value contradicts the old value of the SAME attribute (e.g. city Hanoi → Saigon, current task X → Y). \
+  Never use `replace` for `concept` or `behavioral` kinds — those are stable categories.\n\
 - `new`: unrelated attributes.\n\n\
-Bias toward `reuse` when the two values would naturally update the same slot in a structured profile. \
+Bias toward `reuse` when the two values would naturally update the same slot. Bias toward `replace` when same slot but value is clearly different. \
 Different slug strings alone are NEVER a reason to keep duplicates. \
 Output one word.";
+
+const PROPAGATE_TEMPERATURE: f32 = 0.0;
+const PROPAGATE_MAX_TOKENS: u32 = 16;
+const PROPAGATE_SYSTEM: &str = "You decide whether a stored fact about a user is still valid after a new observation. \
+Output EXACTLY ONE lowercase word: `keep`, `stale`, or `unknown`.\n\n\
+- `keep`: the stored fact is still consistent with the new observation. Most cases.\n\
+- `stale`: the new observation logically invalidates the stored fact, AND a sensible replacement is implied or trivially recoverable. The stored fact should be archived.\n\
+- `unknown`: the stored fact's default is no longer safe (the new observation breaks the precondition), but no replacement is implied. Mark the slot as unresolved so the assistant asks the user instead of relying on the cached value.\n\n\
+Examples:\n\
+- Stored `commute = bikes to work`. New: `user moved to Saigon`. → `stale` (bike commute around West Lake no longer applies).\n\
+- Stored `daily_run = 5km morning loop`. New: `user broke their leg`. → `unknown` (running invalidated; no new routine implied).\n\
+- Stored `dinner = pho with family`. New: `user mentioned new keyboard`. → `keep` (orthogonal).\n\n\
+Only output one word. No prose.";
 
 const CONSOLIDATE_TEMPERATURE: f32 = 0.2;
 const CONSOLIDATE_MAX_TOKENS: u32 = 400;
@@ -208,8 +245,55 @@ pub fn parse_judge_response(raw: &str, existing_id: i64) -> JudgeOutcome {
     match word.as_str() {
         "reuse" => JudgeOutcome::Reuse { existing_id },
         "derive" => JudgeOutcome::Derive { existing_id },
+        "replace" => JudgeOutcome::Replace { existing_id },
         _ => JudgeOutcome::New,
     }
+}
+
+pub fn parse_propagate_response(raw: &str) -> PropagateOutcome {
+    let word = raw
+        .lines()
+        .find_map(|line| line.split_whitespace().next())
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_ascii_lowercase();
+    match word.as_str() {
+        "stale" => PropagateOutcome::Stale,
+        "unknown" | "unresolved" => PropagateOutcome::Unknown,
+        _ => PropagateOutcome::Keep,
+    }
+}
+
+/// Ask the model whether an existing fact is still valid after a new
+/// observation. Used for belief propagation after a `Replace` fires on a
+/// profile/state fact — e.g., location change cascades to invalidate
+/// commute/routine facts.
+///
+/// Defaults to `Keep` on any error (LLM failure, empty response) so
+/// propagation is fail-safe: a faulty cascade can only fail to archive a
+/// fact, never archive one in error.
+pub async fn propagate_validity(
+    config: &LlamaConfig,
+    new_observation: &str,
+    existing_fact: &Fact,
+) -> PropagateOutcome {
+    let cfg = LlamaConfig {
+        url: config.url.clone(),
+        model: config.model.clone(),
+        temperature: Some(PROPAGATE_TEMPERATURE),
+        max_tokens: Some(PROPAGATE_MAX_TOKENS),
+    };
+    let prompt = format!(
+        "Stored fact (kind={}, slug={}): {}\n\nNew observation about the user: {new_observation}\n\nIs the stored fact still valid? Output one word: keep, stale, or unknown.",
+        existing_fact.kind.as_str(),
+        existing_fact.slug,
+        existing_fact.content,
+    );
+    let messages = vec![Message::system(PROPAGATE_SYSTEM), Message::user(prompt)];
+    let Some(raw) = collect_stream(&cfg, &messages).await else {
+        return PropagateOutcome::Keep;
+    };
+    parse_propagate_response(&raw)
 }
 
 /// Pick the most lexically similar candidate by token overlap on slug+content.
@@ -295,8 +379,11 @@ async fn collect_stream(config: &LlamaConfig, messages: &[Message]) -> Option<St
 
 #[cfg(test)]
 mod tests {
-    use super::{JudgeOutcome, overlap, parse_judge_response, pick_best_candidate, tokenize};
-    use crate::memory::{Fact, FactKind};
+    use super::{
+        JudgeOutcome, PropagateOutcome, overlap, parse_judge_response, parse_propagate_response,
+        pick_best_candidate, tokenize,
+    };
+    use crate::memory::{Fact, FactKind, FactStatus};
     use crate::memory_capture::CapturedFact;
 
     fn fact(id: i64, slug: &str, content: &str) -> Fact {
@@ -308,6 +395,8 @@ mod tests {
             skill_scope: None,
             created_at: 0,
             last_used: 0,
+            status: FactStatus::Active,
+            stale_at: None,
         }
     }
 
@@ -343,6 +432,32 @@ mod tests {
             parse_judge_response("reuse — same", 5),
             JudgeOutcome::Reuse { existing_id: 5 }
         ));
+    }
+
+    #[test]
+    fn parser_accepts_replace_outcome() {
+        assert!(matches!(
+            parse_judge_response("replace", 11),
+            JudgeOutcome::Replace { existing_id: 11 }
+        ));
+        assert!(matches!(
+            parse_judge_response("REPLACE.", 11),
+            JudgeOutcome::Replace { existing_id: 11 }
+        ));
+    }
+
+    #[test]
+    fn propagate_parser_recognizes_three_outcomes() {
+        assert_eq!(parse_propagate_response("keep"), PropagateOutcome::Keep);
+        assert_eq!(parse_propagate_response("stale"), PropagateOutcome::Stale);
+        assert_eq!(parse_propagate_response("unknown"), PropagateOutcome::Unknown);
+        assert_eq!(parse_propagate_response("unresolved"), PropagateOutcome::Unknown);
+    }
+
+    #[test]
+    fn propagate_parser_defaults_to_keep_on_unknown_words() {
+        assert_eq!(parse_propagate_response(""), PropagateOutcome::Keep);
+        assert_eq!(parse_propagate_response("not sure"), PropagateOutcome::Keep);
     }
 
     #[test]

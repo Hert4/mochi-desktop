@@ -10,7 +10,7 @@ use crate::agent::types;
 use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
 use crate::memory::{self, MemoryStore, render_memory_section};
 use crate::memory_capture;
-use crate::memory_judge::{self, JudgeOutcome};
+use crate::memory_judge::{self, JudgeOutcome, PropagateOutcome};
 use crate::skills::{self, Skill};
 use crate::tools;
 use futures::StreamExt as _;
@@ -223,6 +223,36 @@ fn fallback_slug_scope(
     (fact.slug.clone(), scope)
 }
 
+/// For a `Derive` outcome the candidate and the matched existing fact share
+/// a theme but cover distinct facets — they must NOT collide on the same
+/// active slot or the upsert silently overwrites the existing content.
+/// Append `-2`, `-3`, ... until a free slug is found for the same scope.
+fn disambiguate_slug_for_derive(
+    store: &MemoryStore,
+    kind: memory::FactKind,
+    base_slug: &str,
+    scope: Option<&str>,
+) -> String {
+    if store.find_active_slug(kind, base_slug, scope).unwrap_or(None).is_none() {
+        return base_slug.to_owned();
+    }
+    for n in 2..32 {
+        let candidate = format!("{base_slug}-{n}");
+        if store.find_active_slug(kind, &candidate, scope).unwrap_or(None).is_none() {
+            return candidate;
+        }
+    }
+    // Give up after 32 collisions — pollute with a timestamp suffix rather
+    // than overwrite the existing fact.
+    format!(
+        "{base_slug}-{ts}",
+        ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    )
+}
+
 fn load_skills_cache() -> BTreeMap<String, Skill> {
     skills::default_skills_dir().and_then(|p| skills::load_all(&p).ok()).unwrap_or_default()
 }
@@ -250,36 +280,142 @@ fn spawn_background_capture(
         let Some(path) = memory::default_db_path() else { return };
         let Ok(store) = MemoryStore::open(&path) else { return };
         let behavioral_scope = active_skill.as_deref().unwrap_or("default");
+        let mut propagation_triggers: Vec<memory::Fact> = Vec::new();
         for fact in &facts {
-            // BOOKMARKS-style judge: against existing same-kind facts, decide
-            // reuse/derive/new. On reuse, overwrite the matched fact's content
-            // by upserting under its existing slug. Otherwise insert fresh.
+            // BOOKMARKS-style judge extended with STALE paper §F.2 outcomes:
+            // reuse/derive/replace/new. `replace` archives the old fact and
+            // writes the new value as a fresh active row (only allowed for
+            // profile/state by the judge prompt); `derive`/`new` insert
+            // fresh; `reuse` overwrites the matched slot.
             let existing = store.list(Some(fact.kind)).unwrap_or_default();
             let existing_refs: Vec<&memory::Fact> = existing.iter().collect();
             let outcome = memory_judge::judge_capture(&config, fact, &existing_refs).await;
 
-            let (target_slug, target_scope) = match outcome {
-                JudgeOutcome::Reuse { existing_id } => {
-                    let matched = existing.iter().find(|f| f.id == existing_id);
-                    match matched {
-                        Some(m) => (m.slug.clone(), m.skill_scope.clone()),
-                        None => fallback_slug_scope(fact, behavioral_scope),
+            match outcome {
+                JudgeOutcome::Replace { existing_id } => {
+                    let matched = existing.iter().find(|f| f.id == existing_id).cloned();
+                    if let Some(m) = matched {
+                        let _ = store.mark_stale(m.id);
+                        let (slug, scope) = (m.slug.clone(), m.skill_scope.clone());
+                        let _ = store.upsert(fact.kind, &slug, &fact.content, scope.as_deref());
+                        // Trigger propagation when a profile/state replace
+                        // fires — relocation / project switch may cascade to
+                        // invalidate state facts that mention the old value.
+                        if matches!(fact.kind, memory::FactKind::Profile | memory::FactKind::State)
+                        {
+                            propagation_triggers.push(m);
+                        }
+                    } else {
+                        // matched row not found (race) — fall back to insert
+                        let (slug, scope) = fallback_slug_scope(fact, behavioral_scope);
+                        let _ = store.upsert(fact.kind, &slug, &fact.content, scope.as_deref());
                     }
                 }
-                JudgeOutcome::Derive { .. } | JudgeOutcome::New => {
-                    fallback_slug_scope(fact, behavioral_scope)
+                JudgeOutcome::Reuse { existing_id } => {
+                    let matched = existing.iter().find(|f| f.id == existing_id);
+                    let (slug, scope) = match matched {
+                        Some(m) => (m.slug.clone(), m.skill_scope.clone()),
+                        None => fallback_slug_scope(fact, behavioral_scope),
+                    };
+                    let _ = store.upsert(fact.kind, &slug, &fact.content, scope.as_deref());
                 }
-            };
-            let _ = store.upsert(fact.kind, &target_slug, &fact.content, target_scope.as_deref());
+                JudgeOutcome::Derive { existing_id } => {
+                    // Derive means "same theme, distinct facet" — the new
+                    // row must NOT collide with the matched existing row's
+                    // active slot, otherwise the upsert silently overwrites
+                    // the existing content. Disambiguate by suffixing the
+                    // slug when needed.
+                    let (base_slug, scope) = fallback_slug_scope(fact, behavioral_scope);
+                    let matched_slug =
+                        existing.iter().find(|f| f.id == existing_id).map(|f| f.slug.clone());
+                    let slug = if matched_slug.as_deref() == Some(base_slug.as_str()) {
+                        disambiguate_slug_for_derive(
+                            &store,
+                            fact.kind,
+                            &base_slug,
+                            scope.as_deref(),
+                        )
+                    } else {
+                        base_slug
+                    };
+                    let _ = store.upsert(fact.kind, &slug, &fact.content, scope.as_deref());
+                }
+                JudgeOutcome::New => {
+                    let (slug, scope) = fallback_slug_scope(fact, behavioral_scope);
+                    let _ = store.upsert(fact.kind, &slug, &fact.content, scope.as_deref());
+                }
+            }
         }
+        let propagated = if propagation_triggers.is_empty() {
+            0
+        } else {
+            run_belief_propagation(&config, &store, &user_text, &propagation_triggers).await
+        };
         tracing::info!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "memory_auto_captured",
             count = facts.len(),
-            "auto-captured {} facts from user message", facts.len(),
+            propagated,
+            "auto-captured {} facts from user message ({} propagated invalidations)", facts.len(), propagated,
         );
         let _ = rt_tx.send(LlamaRuntimeCommand::RebuildSystem);
     });
+}
+
+/// STALE paper §F.2 belief propagation, simplified for Mochi's flat 4-kind
+/// schema. When a profile or state fact gets `Replace`'d, every state fact
+/// becomes a candidate (capped at `MAX_CANDIDATES`) and the LLM decides
+/// whether each is still valid given the new observation.
+///
+/// Earlier versions gated candidates on token overlap between the *archived*
+/// trigger value and each state fact's content, but the canonical Type II
+/// example (location Hanoi → Saigon invalidating "bikes around West Lake")
+/// has zero overlap between "Hanoi" and "West Lake daily" — the location
+/// vocabulary is precisely what is *not* repeated in the dependent fact.
+/// We now feed all state facts to the LLM (paper §F.2 R_global fallback,
+/// scaled to Mochi's tiny memory store), with the trigger's archived value
+/// included in the prompt context so the model can ground the dependency.
+async fn run_belief_propagation(
+    config: &LlamaConfig,
+    store: &MemoryStore,
+    new_observation: &str,
+    triggers: &[memory::Fact],
+) -> usize {
+    const MAX_CANDIDATES: usize = 5;
+    let Ok(state_facts) = store.list(Some(memory::FactKind::State)) else {
+        return 0;
+    };
+    if state_facts.is_empty() {
+        return 0;
+    }
+    let mut invalidated = 0usize;
+    for trigger in triggers {
+        // Compose the propagation context: new user observation + the value
+        // that was just archived. Either alone is insufficient — the LLM
+        // needs both to reason about the dependency.
+        let propagation_context = format!(
+            "Recent user observation: {new_observation}\n\nThe user just changed `{}` from `{}` to a new value.",
+            trigger.slug, trigger.content,
+        );
+        let candidates: Vec<&memory::Fact> =
+            state_facts.iter().filter(|f| f.id != trigger.id).take(MAX_CANDIDATES).collect();
+        for candidate in candidates {
+            let outcome =
+                memory_judge::propagate_validity(config, &propagation_context, candidate).await;
+            match outcome {
+                PropagateOutcome::Stale => {
+                    let _ = store.mark_stale(candidate.id);
+                    invalidated += 1;
+                }
+                PropagateOutcome::Unknown => {
+                    let _ = store.mark_unknown(candidate.id);
+                    invalidated += 1;
+                }
+                PropagateOutcome::Keep => {}
+            }
+        }
+    }
+    invalidated
 }
 
 const MAX_TOOL_ITERATIONS: usize = 6;

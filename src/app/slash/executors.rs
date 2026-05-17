@@ -88,19 +88,34 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
     let sub = args.first().copied().unwrap_or("list");
     match sub {
         "list" => {
-            let kind = args.get(1).and_then(|s| FactKind::parse(s));
-            match store.list(kind) {
+            // `/memory list all` and `/memory list all KIND` include archived
+            // STALE rows for audit. Otherwise default to active-only readout
+            // (matches STALE paper §F.3 constrained readout used by the model).
+            let (include_archived, kind) = match (args.get(1).copied(), args.get(2).copied()) {
+                (Some("all"), kind_str) => (true, kind_str.and_then(FactKind::parse)),
+                (Some(kind_str), _) => (false, FactKind::parse(kind_str)),
+                (None, _) => (false, None),
+            };
+            let facts_result =
+                if include_archived { store.list_all(kind) } else { store.list(kind) };
+            match facts_result {
                 Ok(facts) if facts.is_empty() => {
                     info(app, "memory: no facts stored.");
                 }
                 Ok(facts) => {
                     let mut out = String::from("memory:\n");
                     for f in facts {
+                        let status_tag = match f.status {
+                            crate::memory::FactStatus::Active => "",
+                            crate::memory::FactStatus::Stale => " [STALE]",
+                            crate::memory::FactStatus::Unknown => " [UNKNOWN]",
+                        };
                         out.push_str(&format!(
-                            "  [{}] {} (scope={})  {}\n",
+                            "  [{}] {} (scope={}){}  {}\n",
                             f.kind.as_str(),
                             f.slug,
                             f.skill_scope.as_deref().unwrap_or("-"),
+                            status_tag,
                             f.content
                         ));
                     }
@@ -109,6 +124,87 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
                 Err(e) => {
                     info(app, format!("memory: list failed: {e}"));
                 }
+            }
+        }
+        "archive" => {
+            let Some(&slug) = args.get(1) else {
+                info(
+                    app,
+                    "usage: /memory archive SLUG  (mark fact as STALE — won't inject into prompt but stays in DB)",
+                );
+                return true;
+            };
+            let mut targets: Vec<i64> = Vec::new();
+            if let Ok(all) = store.list_all(None) {
+                for f in all {
+                    if f.slug == slug && f.status != crate::memory::FactStatus::Stale {
+                        targets.push(f.id);
+                    }
+                }
+            }
+            if targets.is_empty() {
+                info(app, format!("no active fact named `{slug}`"));
+                return true;
+            }
+            let mut wrote = 0usize;
+            for id in &targets {
+                if store.mark_stale(*id).is_ok() {
+                    wrote += 1;
+                }
+            }
+            info(app, format!("archived {wrote} fact(s) `{slug}` as STALE"));
+            if wrote > 0 {
+                signal_runtime(
+                    app,
+                    crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
+                );
+            }
+        }
+        "revive" => {
+            let Some(&slug) = args.get(1) else {
+                info(app, "usage: /memory revive SLUG  (flip STALE/UNKNOWN fact back to ACTIVE)");
+                return true;
+            };
+            let mut targets: Vec<i64> = Vec::new();
+            if let Ok(all) = store.list_all(None) {
+                for f in all {
+                    if f.slug == slug && f.status != crate::memory::FactStatus::Active {
+                        targets.push(f.id);
+                    }
+                }
+            }
+            if targets.is_empty() {
+                info(app, format!("no archived fact named `{slug}`"));
+                return true;
+            }
+            let mut wrote = 0usize;
+            let mut errors: Vec<String> = Vec::new();
+            for id in &targets {
+                match store.mark_active(*id) {
+                    Ok(()) => wrote += 1,
+                    Err(e) => {
+                        // Most common failure: UNIQUE constraint on
+                        // `facts_active_slot` — another active row already
+                        // occupies this slot. Surface so the user knows to
+                        // /memory archive the conflicting row first.
+                        errors.push(format!("id {id}: {e}"));
+                    }
+                }
+            }
+            if wrote > 0 {
+                info(app, format!("revived {wrote} fact(s) `{slug}` to ACTIVE"));
+                signal_runtime(
+                    app,
+                    crate::app::connect::llama_lifecycle::LlamaRuntimeCommand::RebuildSystem,
+                );
+            }
+            for err in errors {
+                warn(
+                    app,
+                    format!(
+                        "memory revive failed for {err}\nhint: another active fact may already occupy this slot — /memory archive it first"
+                    ),
+                );
             }
         }
         "remember" => {
@@ -263,7 +359,7 @@ fn handle_memory_submit(app: &mut App, raw: &str, args: &[&str]) -> bool {
         _ => {
             info(
                 app,
-                "memory: subcommands are list | remember KIND SLUG CONTENT | forget SLUG | profile [TEXT] | consolidate | query <text> | mode active|all | restate <slug> | observe <behavioral query>",
+                "memory: subcommands are list [all] [KIND] | remember KIND SLUG CONTENT | forget SLUG | archive SLUG | revive SLUG | profile [TEXT] | consolidate | query <text> | mode active|all | restate <slug> | observe <behavioral query>",
             );
         }
     }
